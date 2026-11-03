@@ -1,0 +1,3 @@
+# One S3 bucket per zone, not one bucket with zone folders
+
+The proposal describes one data lake with raw, curated and gold as folders, but S3 versioning is set per bucket: the raw zone must keep versions to protect source evidence, while curated, gold and their rebuilds should not pay to keep every overwritten version. We therefore give each zone (raw, curated, gold, and the versioned model store) its own bucket with its own versioning, lifecycle and access rules, so a bad delete or `force_destroy` on one zone cannot reach another; folders are still used inside each bucket for the dataset version and date partitions.

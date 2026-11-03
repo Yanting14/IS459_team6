@@ -1,0 +1,3 @@
+# Labels are a separate curated table, and both views use one feature builder
+
+Prepare extracts the laundering label alongside the features but writes it to its own curated table (with rings from the patterns file), so scoring and Analyse never read it and it cannot leak into model inputs; the diagram's "labels only" arrow therefore starts at curated, not raw. Prepare writes shared-view features only, because computing bank-view counterparty features for every bank is too expensive and Q2 needs only a sample; Analyse recomputes them for its sampled banks by calling the same `build_features` function on transfers filtered to that bank's view, so the two views can differ only in the data they see, never in the code that computes them.
