@@ -70,13 +70,19 @@ def test_clean_transfers_carry_sender_and_receiver_accounts(spark, raw, curated)
     }]
 
 
+def test_curated_transfers_carry_no_laundering_mark(spark, raw, curated):
+    run_job(raw, curated)
+
+    assert not [c for c in transfers(spark, curated).columns if "laundering" in c]
+
+
 def test_self_transfers_are_kept(spark, raw, curated):
     run_job(raw, curated)
 
     df = transfers(spark, curated)
-    selfs = df.where("sender_bank_id = receiver_bank_id "
-                     "AND sender_account_number = receiver_account_number").collect()
-    assert [(r.sender_bank_id, r.payment_format) for r in selfs] == [("3208", "Reinvestment")]
+    self_transfers = df.where("sender_bank_id = receiver_bank_id "
+                              "AND sender_account_number = receiver_account_number").collect()
+    assert [(r.sender_bank_id, r.payment_format) for r in self_transfers] == [("3208", "Reinvestment")]
 
 
 def test_partitioned_by_date_and_sorted_by_sender_bank(spark, raw, curated):
