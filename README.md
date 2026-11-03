@@ -7,6 +7,7 @@ AML detection pipeline on AWS (us-east-1), built with Terraform.
 ```
 infra/                 Terraform (S3 raw zone, ingest task, Step Functions, schedule)
 ingest/                Fargate container: Kaggle -> S3 raw zone
+prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
 scripts/               Helper scripts
 ```
@@ -37,6 +38,37 @@ s3://is459-team6-raw-<account>/ibm-aml/v1/
   manifest.json          sizes, line counts, sha256 for each file
   _SUCCESS
 ```
+
+## Prepare job
+
+`prepare/prepare.py` reads the raw transfer file for one dataset size and writes
+clean transfers to the curated zone, then a quality report, then `_SUCCESS`:
+
+```
+<curated>/<version-prefix>/
+  transfers/date=YYYY-MM-DD/*.parquet   sorted by sender_bank_id
+  quality/<run_id>.json                 rows_in, rows_accepted
+  _SUCCESS
+```
+
+If `_SUCCESS` already exists under the version prefix, the job does nothing.
+`--input` and `--output` take S3 URIs or local folders:
+
+```bash
+spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v1
+```
+
+Tests run the job on a small hand-made raw zone with a local Spark session.
+They need Python 3.11 and a JDK (17 or 21, with `javac` on the PATH):
+
+```bash
+pip install -r prepare/requirements-dev.txt
+python -m pytest prepare
+```
+
+On Windows no winutils or `HADOOP_HOME` is needed: `prepare/conftest.py` compiles
+`WindowsLocalFileSystem.java`, a test-only stand-in for Hadoop's local filesystem,
+which otherwise needs native Hadoop binaries there.
 
 ## First-time setup
 
