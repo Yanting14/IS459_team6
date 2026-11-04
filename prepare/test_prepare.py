@@ -69,9 +69,13 @@ EXPECTED_FEATURES = [
     ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0, 3, 2,
      1150.0, 500.0, 300.0, 0.434783, 21.666667, 2, 3, 4, 0.0, 1, 3),
 ]
+# The second row is the one that makes the size matter: 12 Sep is inside HI-Medium's days
+# and past HI-Small's, so the same raw zone featurises it under one size and not the other.
 SMALL_ROWS = [
     "2022/09/05 01:00,1,800A1B2C3,010,8000EBD30,5.00,US Dollar,5.00,US Dollar,Cash,0",
+    "2022/09/12 01:00,1,800A1B2C3,010,8000EBD30,7.00,US Dollar,7.00,US Dollar,Cash,0",
 ]
+MEDIUM_PERIOD = ("2022-09-01", "2022-09-16")
 # One row per quarantine rule, appended after MEDIUM_ROWS so they are rows 9 to 14.
 BROKEN_ROWS = [
     "2022/09/04 08:00,010,8000EBD30,3208,,70.00,US Dollar,70.00,US Dollar,Wire,0",
@@ -463,6 +467,22 @@ def test_rings_carry_a_ring_id_a_pattern_type_and_the_transfers_own_fields(spark
     assert not list((curated / PREFIX / "rings").glob("*=*"))  # not partitioned
 
 
+def test_the_feature_window_follows_the_dataset_size(spark, raw, tmp_path):
+    """Each size has its own primary period, so the same transfer is in or out by size.
+
+    HI-Large runs from 1 Aug to 5 Nov, so a window fixed at HI-Medium's days would have
+    featurised sixteen days of it and dropped the rest without saying so.
+    """
+    out = tmp_path / "small"
+    run_job(raw, out, "--size", "small")
+
+    assert transfers(spark, out).count() == len(SMALL_ROWS)  # every row is still kept
+    days = (spark.read.parquet(str(out / PREFIX / "features"))
+            .selectExpr("cast(date AS string) AS date").distinct().collect())
+    assert sorted(r.date for r in days) == ["2022-09-05"]  # 12 Sep is past HI-Small's days
+    assert only_report(out)["primary_period"] == ["2022-09-01", "2022-09-10"]
+
+
 def test_quality_report_records_the_days_and_banks_seen(raw, curated, spark):
     run_job(raw, curated)
 
@@ -496,7 +516,8 @@ def one_transfer(spark, amount):
 def test_pass_through_is_zero_when_no_money_moved(spark):
     """Both sides zero can only reach `build_features` directly: the job quarantines a
     zero amount, and this is the contract Analyse calls, so it must not divide 0 by 0."""
-    rows = prepare.build_features(one_transfer(spark, 0), EXPECTED_RATES).collect()
+    rows = prepare.build_features(one_transfer(spark, 0), EXPECTED_RATES,
+                                  MEDIUM_PERIOD).collect()
 
     assert [(r.usd_in, r.usd_out, r.pass_through) for r in rows] == [(0.0, 0.0, 0.0)] * 2
 
@@ -504,7 +525,7 @@ def test_pass_through_is_zero_when_no_money_moved(spark):
 def test_a_counterparty_feature_is_null_where_that_side_has_no_counterparty(spark):
     """With a single transfer the sender pays an account but no account pays it, and the
     receiver the other way round, so each is missing exactly one of the two."""
-    rows = (prepare.build_features(one_transfer(spark, 100), EXPECTED_RATES)
+    rows = (prepare.build_features(one_transfer(spark, 100), EXPECTED_RATES, MEDIUM_PERIOD)
             .orderBy("bank_id").collect())
 
     assert [(r.bank_id, r.cp_max_fan_in, r.cp_max_fan_out) for r in rows] == [
@@ -529,7 +550,7 @@ def test_a_bank_view_changes_only_the_counterparty_features(spark, raw, curated)
     own = [c for c in prepare.FEATURES if c not in prepare.COUNTERPARTY_FEATURES]
 
     def features_of_bank_010(df, columns):
-        return (prepare.build_features(df, rates).where("bank_id = '010'")
+        return (prepare.build_features(df, rates, MEDIUM_PERIOD).where("bank_id = '010'")
                 .orderBy(*prepare.FEATURE_KEYS).select(*columns).collect())
 
     assert bank_view.count() < clean.count()  # the view really is narrower

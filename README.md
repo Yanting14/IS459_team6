@@ -66,7 +66,7 @@ labels and rings to the curated zone, then a quality report, then `_SUCCESS`:
   rings/*.parquet                        one row per transfer listed in the patterns file
   quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
   quality/<run_id>.json                  row counts and reasons, USD rates, self-transfers,
-                                         and the days and banks the run saw
+                                         the days and banks seen, the days featurised
   _SUCCESS
 ```
 
@@ -146,9 +146,10 @@ dataset's 35,230 laundering transfers, or 11.6%. Those account-days would have n
 empty 7-day lookback windows, so they are poor training rows, but the trade is a real
 one and is recorded on #2 rather than decided here.
 
-`FIRST_DAY` and `LAST_DAY` are HI-Medium's days and `--size` does not move them, so a run
-on HI-Large would featurise 16 days of a dataset that runs from 1 Aug to 5 Nov. Story 21's
-one-argument scale-up needs them derived per size first.
+Which days those are follows `--size`, since each size has its own primary period: 1-10
+Sep for small, 1-16 Sep for medium, 1 Aug to 5 Nov for large, the same for HI and LI. The
+quality report gives the period it used as `primary_period`, beside the `first_day` and
+`last_day` the input held, and an unknown size is refused before anything is read.
 
 `--input` and `--output` take S3 URIs or local folders, which is how the same script
 runs on EMR Serverless and under the local tests:
