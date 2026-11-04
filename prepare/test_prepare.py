@@ -31,21 +31,33 @@ MEDIUM_ROWS = [
     "2022/08/31 12:00,7,800E5E5E5,7,800F6F6F6,10.00,US Dollar,10.00,US Dollar,Cash,0",
     "2022/09/17 12:00,010,8000EBD30,3208,8000F4580,20.00,US Dollar,20.00,US Dollar,Cash,0",
 ]
-FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "hrs_in_to_out",
-            "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
-            "history_days"]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "usd_in", "usd_out",
+            "max_usd", "pass_through", "hrs_in_to_out", "max_txn_per_day", "active_days",
+            "n_pay_formats", "ach_share", "n_currencies", "history_days"]
+# The only cross-currency transfer pays 800 US Dollar for 700 Euro, so the Euro's rate is
+# 700/800 = 0.875 Euro per dollar and the 700 Euro that account received is 800 USD.
+EXPECTED_RATES = {"Euro": 0.875, "US Dollar": 1.0}
 # Hand-computed from MEDIUM_ROWS, one row per account-day, ordered by bank then account
 # then day. Columns: the three keys, then FEATURES in order. Floats rounded to 6 places.
 EXPECTED_FEATURES = [
-    ("010", "8000EBD30", "2022-09-01", 1, 1, 2, 1.0, None, 2, 1, 2, 0.5, 2, 1),
-    ("010", "8000EBD30", "2022-09-02", 3, 2, 3, 0.8, 2.5, 3, 2, 2, 0.4, 2, 2),
-    ("010", "8000EBD30", "2022-09-03", 3, 2, 3, 0.833333, 13.125, 3, 3, 3, 0.333333, 2, 3),
-    ("010", "800D4D4D4", "2022-09-02", 0, 1, 1, 0.0, None, 1, 1, 1, 0.0, 1, 2),
-    ("1", "800A1B2C3", "2022-09-01", 1, 1, 2, 1.0, None, 2, 1, 2, 0.5, 1, 1),
-    ("1", "800A1B2C3", "2022-09-02", 2, 2, 2, 1.0, 13.483333, 2, 2, 3, 0.5, 1, 2),
-    ("3208", "8000F4580", "2022-09-01", 1, 1, 2, 1.0, 11.666667, 2, 1, 2, 0.0, 1, 1),
-    ("3208", "8000F4580", "2022-09-02", 2, 2, 2, 1.0, 21.666667, 2, 2, 3, 0.0, 1, 2),
-    ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0, 21.666667, 2, 3, 4, 0.0, 1, 3),
+    ("010", "8000EBD30", "2022-09-01", 1, 1, 2, 1.0,
+     800.0, 1000.0, 1000.0, 0.8, None, 2, 1, 2, 0.5, 2, 1),
+    ("010", "8000EBD30", "2022-09-02", 3, 2, 3, 0.8,
+     1400.0, 1150.0, 1000.0, 0.821429, 2.5, 3, 2, 2, 0.4, 2, 2),
+    ("010", "8000EBD30", "2022-09-03", 3, 2, 3, 0.833333,
+     1400.0, 1210.0, 1000.0, 0.864286, 13.125, 3, 3, 3, 0.333333, 2, 3),
+    ("010", "800D4D4D4", "2022-09-02", 0, 1, 1, 0.0,
+     0.0, 400.0, 400.0, 0.0, None, 1, 1, 1, 0.0, 1, 2),
+    ("1", "800A1B2C3", "2022-09-01", 1, 1, 2, 1.0,
+     300.0, 800.0, 800.0, 0.375, None, 2, 1, 2, 0.5, 1, 1),
+    ("1", "800A1B2C3", "2022-09-02", 2, 2, 2, 1.0,
+     450.0, 890.0, 800.0, 0.505618, 13.483333, 2, 2, 3, 0.5, 1, 2),
+    ("3208", "8000F4580", "2022-09-01", 1, 1, 2, 1.0,
+     1000.0, 300.0, 300.0, 0.3, 11.666667, 2, 1, 2, 0.0, 1, 1),
+    ("3208", "8000F4580", "2022-09-02", 2, 2, 2, 1.0,
+     1090.0, 500.0, 300.0, 0.458716, 21.666667, 2, 2, 3, 0.0, 1, 2),
+    ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0,
+     1150.0, 500.0, 300.0, 0.434783, 21.666667, 2, 3, 4, 0.0, 1, 3),
 ]
 SMALL_ROWS = [
     "2022/09/05 01:00,1,800A1B2C3,010,8000EBD30,5.00,US Dollar,5.00,US Dollar,Cash,0",
@@ -342,6 +354,42 @@ def test_features_are_partitioned_by_date_and_sorted_by_bank(spark, raw, curated
         assert banks == sorted(banks)
 
 
+@pytest.fixture
+def raw_with_an_unpriced_currency(tmp_path):
+    """A Yen amount paid for in Euro, so no transfer prices the Yen against the dollar."""
+    unpriced = ("2022/09/04 10:00,010,8000EBD30,3208,8000F4580,1000.00,Yen,8.00,Euro,Wire,0")
+    return write_raw(tmp_path / "raw-unpriced", "medium", [*MEDIUM_ROWS, unpriced])
+
+
+def test_a_cross_currency_transfer_prices_its_currency_in_the_quality_report(raw, curated, spark):
+    run_job(raw, curated)
+
+    assert only_report(curated)["usd_rates"] == EXPECTED_RATES
+
+
+def test_a_currency_that_never_trades_against_usd_fails_the_job_by_name(
+        spark, raw_with_an_unpriced_currency, curated):
+    with pytest.raises(RuntimeError, match="Yen"):
+        run_job(raw_with_an_unpriced_currency, curated)
+
+    assert not (curated / PREFIX / "_SUCCESS").exists()
+
+
+def test_pass_through_is_zero_when_no_money_moved(spark):
+    """Both sides zero can only reach `build_features` directly: the job quarantines a
+    zero amount, and this is the contract Analyse calls, so it must not divide 0 by 0."""
+    nothing_moved = spark.sql("""
+        SELECT timestamp('2022-09-01 00:20') AS timestamp,
+               '010' AS sender_bank_id, '8000EBD30' AS sender_account_number,
+               '3208' AS receiver_bank_id, '8000F4580' AS receiver_account_number,
+               CAST(0 AS DOUBLE) AS amount_paid, CAST(0 AS DOUBLE) AS amount_received,
+               'US Dollar' AS payment_currency, 'US Dollar' AS receiving_currency,
+               'Wire' AS payment_format""")
+
+    rows = prepare.build_features(nothing_moved, EXPECTED_RATES).collect()
+    assert [(r.usd_in, r.usd_out, r.pass_through) for r in rows] == [(0.0, 0.0, 0.0)] * 2
+
+
 def test_a_bank_view_gives_that_banks_own_accounts_the_same_features(spark, raw, curated):
     """Seam 2: `build_features` is the contract with Analyse, so it is called directly here.
 
@@ -352,9 +400,12 @@ def test_a_bank_view_gives_that_banks_own_accounts_the_same_features(spark, raw,
     run_job(raw, curated)
     clean = transfers(spark, curated)
     bank_view = clean.where("sender_bank_id = '010' OR receiver_bank_id = '010'")
+    # Rates come from the whole dataset, as Prepare derived them; a bank view is not asked
+    # to re-derive them from the fraction of transfers it can see.
+    rates = prepare.usd_rates(clean)
 
     def features_of_bank_010(df):
-        return (prepare.build_features(df).where("bank_id = '010'")
+        return (prepare.build_features(df, rates).where("bank_id = '010'")
                 .orderBy(*prepare.FEATURE_KEYS).collect())
 
     assert bank_view.count() < clean.count()  # the view really is narrower
