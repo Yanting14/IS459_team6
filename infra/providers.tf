@@ -1,5 +1,17 @@
 terraform {
-  required_version = ">= 1.5"
+  # use_lockfile needs 1.10 or newer.
+  required_version = ">= 1.10"
+
+  # The team shares one state, so it lives in S3, with S3's own lockfile keeping two
+  # applies apart. This bucket cannot be managed by this configuration, because it has
+  # to exist before the backend loads; the README has the one-off commands that made it.
+  backend "s3" {
+    bucket       = "is459-team6-tfstate-207567757101"
+    key          = "infra/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {

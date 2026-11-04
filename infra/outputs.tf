@@ -6,6 +6,10 @@ output "raw_bucket" {
   value = aws_s3_bucket.raw.id
 }
 
+output "curated_bucket" {
+  value = aws_s3_bucket.curated.id
+}
+
 output "kaggle_secret_name" {
   value = aws_secretsmanager_secret.kaggle.name
 }

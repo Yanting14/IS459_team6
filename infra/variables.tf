@@ -31,6 +31,12 @@ variable "raw_prefix" {
   default     = "ibm-aml/v1"
 }
 
+variable "curated_prefix" {
+  description = "Key prefix in the curated bucket. Bump the version to force a fresh build."
+  type        = string
+  default     = "ibm-aml/v1"
+}
+
 variable "ingest_image_tag" {
   type    = string
   default = "latest"
