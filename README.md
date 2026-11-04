@@ -6,7 +6,7 @@ AML detection pipeline on AWS (us-east-1), built with Terraform.
 
 ```
 infra/                 Terraform (S3 raw + curated zones, ingest task, EMR Serverless,
-                       Step Functions, schedule)
+                       Step Functions, schedule; state in S3)
 ingest/                Fargate container: Kaggle -> S3 raw zone
 prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
@@ -98,9 +98,32 @@ On Windows no winutils or `HADOOP_HOME` is needed: `prepare/conftest.py` compile
 `WindowsLocalFileSystem.java`, a test-only stand-in for Hadoop's local filesystem,
 which otherwise needs native Hadoop binaries there.
 
+## Terraform state
+
+State lives in `s3://is459-team6-tfstate-207567757101/infra/terraform.tfstate`, so
+everyone plans against the same reality. `use_lockfile = true` has S3 itself hold the
+lock, which keeps two applies from overlapping, and the bucket is versioned, so a
+clobbered state can be rolled back.
+
+`terraform init` picks all of this up from the backend block in `infra/providers.tf`.
+If you still have a local `infra/terraform.tfstate` from before the backend existed,
+hand it over instead of starting empty:
+
+```bash
+terraform -chdir=infra init -migrate-state
+```
+
+A bucket cannot be managed by the configuration whose state it holds, so this one was
+created once by hand, with `create-bucket`, `put-bucket-versioning` (enabled),
+`put-bucket-encryption` (AES256), `put-public-access-block` (all four on) and a
+TLS-only `put-bucket-policy` of the same shape as the one in `infra/s3.tf`.
+
+State records secrets in plain text, which is why the bucket is private, encrypted and
+TLS-only. Never commit a state file; `.gitignore` already excludes `*.tfstate`.
+
 ## First-time setup
 
-Prerequisites: AWS CLI logged in to the group account, Terraform >= 1.5, Docker,
+Prerequisites: AWS CLI logged in to the group account, Terraform >= 1.10, Docker,
 and a Kaggle API token (kaggle.com -> Settings -> API Tokens -> Generate New Token,
 which shows a `KGAT_...` string once).
 
