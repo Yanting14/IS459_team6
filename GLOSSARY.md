@@ -36,7 +36,7 @@ _Avoid_: Local view, own-bank view
 ### Detection
 
 **Account-day**:
-One account on one calendar day on which it made or received at least one transfer; the unit that is scored and ranked.
+One account on one calendar day on which it made or received at least one transfer with another account; the unit that is scored and ranked. A day of nothing but self-transfers is not one, because every feature excludes self-transfers.
 
 **Lookback window**:
 The 7 calendar days ending with (and including) an account-day's day.

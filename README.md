@@ -55,12 +55,13 @@ s3://is459-team6-raw-<account>/ibm-aml/v1/
 ## Prepare job
 
 `prepare/prepare.py` reads the raw transfer file for one dataset size, sets aside the
-rows whose data is broken, and writes clean transfers to the curated zone, then a
-quality report, then `_SUCCESS`:
+rows whose data is broken, and writes clean transfers and account-day features to the
+curated zone, then a quality report, then `_SUCCESS`:
 
 ```
 <curated>/<version-prefix>/
   transfers/date=YYYY-MM-DD/*.parquet    sorted by sender_bank_id
+  features/date=YYYY-MM-DD/*.parquet     one row per account-day, sorted by bank_id
   quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
   quality/<run_id>.json                  rows_in, rows_accepted, rows_quarantined by reason
   _SUCCESS
@@ -71,6 +72,15 @@ an amount is not a positive number, or the currency or payment format is not in 
 dataset's known set. Being a self-transfer is not a reason on its own. If the
 quarantined share exceeds `--quarantine-threshold` (default `0.01`), the job writes the
 quality report and then fails, so the evidence survives the failure.
+
+`build_features` turns clean transfers into one row per account-day: the account made
+or received at least one non-self transfer that day, within 1 to 16 Sep, with every
+feature measured over the 7 days ending on that day. It is a pure function and the
+contract with the Analyse step (ADR-0002), which calls it on transfers filtered to one
+bank to get that bank's view of the same features, so it must depend on nothing but the
+transfers it is given -- `history_days` therefore counts window days from 1 Sep rather
+than from the first day present in the data. A missing feature value stays null; filling
+it in belongs to Training's preprocessing.
 
 Quarantine is partitioned by run, not by date as ADR-0001 asks of the curated tables:
 it is audit output rather than something to read a day at a time, and a row with an

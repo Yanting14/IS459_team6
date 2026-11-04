@@ -12,16 +12,40 @@ import prepare
 HEADER = ("Timestamp,From Bank,Account,To Bank,Account,Amount Received,Receiving Currency,"
           "Amount Paid,Payment Currency,Payment Format,Is Laundering")
 
-# A few banks (one with a leading zero) over three days, including a self-transfer.
+SELF_TRANSFER = ("2022/09/01 00:20,3208,8000F4580,3208,8000F4580,50.00,US Dollar,50.00,"
+                 "US Dollar,Reinvestment,0")
+# A few banks (one with a leading zero) over three days. Accounts A = (010, 8000EBD30),
+# B = (3208, 8000F4580) and C = (1, 800A1B2C3) both send and receive; D = (010, 800D4D4D4)
+# only ever sends, and only within its own bank. The last two rows fall outside the
+# dataset's 1 to 16 Sep, so they belong in the clean transfers but in no account-day.
 MEDIUM_ROWS = [
     "2022/09/01 00:20,010,8000EBD30,3208,8000F4580,1000.00,US Dollar,1000.00,US Dollar,Wire,0",
-    "2022/09/01 00:20,3208,8000F4580,3208,8000F4580,50.00,US Dollar,50.00,US Dollar,Reinvestment,0",
+    SELF_TRANSFER,
     "2022/09/01 09:15,1,800A1B2C3,010,8000EBD30,700.00,Euro,800.00,US Dollar,ACH,1",
     "2022/09/01 12:00,3208,8000F4580,1,800A1B2C3,300.00,US Dollar,300.00,US Dollar,Cheque,0",
+    "2022/09/02 06:00,010,800D4D4D4,010,8000EBD30,400.00,US Dollar,400.00,US Dollar,Wire,0",
     "2022/09/02 08:00,3208,8000F4580,010,8000EBD30,200.00,US Dollar,200.00,US Dollar,Wire,0",
     "2022/09/02 10:30,010,8000EBD30,1,800A1B2C3,150.00,US Dollar,150.00,US Dollar,ACH,0",
     "2022/09/02 23:59,1,800A1B2C3,3208,8000F4580,90.00,US Dollar,90.00,US Dollar,Credit Card,0",
     "2022/09/03 07:45,010,8000EBD30,3208,8000F4580,60.00,US Dollar,60.00,US Dollar,Cash,0",
+    "2022/08/31 12:00,7,800E5E5E5,7,800F6F6F6,10.00,US Dollar,10.00,US Dollar,Cash,0",
+    "2022/09/17 12:00,010,8000EBD30,3208,8000F4580,20.00,US Dollar,20.00,US Dollar,Cash,0",
+]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "hrs_in_to_out",
+            "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
+            "history_days"]
+# Hand-computed from MEDIUM_ROWS, one row per account-day, ordered by bank then account
+# then day. Columns: the three keys, then FEATURES in order. Floats rounded to 6 places.
+EXPECTED_FEATURES = [
+    ("010", "8000EBD30", "2022-09-01", 1, 1, 2, 1.0, None, 2, 1, 2, 0.5, 2, 1),
+    ("010", "8000EBD30", "2022-09-02", 3, 2, 3, 0.8, 2.5, 3, 2, 2, 0.4, 2, 2),
+    ("010", "8000EBD30", "2022-09-03", 3, 2, 3, 0.833333, 13.125, 3, 3, 3, 0.333333, 2, 3),
+    ("010", "800D4D4D4", "2022-09-02", 0, 1, 1, 0.0, None, 1, 1, 1, 0.0, 1, 2),
+    ("1", "800A1B2C3", "2022-09-01", 1, 1, 2, 1.0, None, 2, 1, 2, 0.5, 1, 1),
+    ("1", "800A1B2C3", "2022-09-02", 2, 2, 2, 1.0, 13.483333, 2, 2, 3, 0.5, 1, 2),
+    ("3208", "8000F4580", "2022-09-01", 1, 1, 2, 1.0, 11.666667, 2, 1, 2, 0.0, 1, 1),
+    ("3208", "8000F4580", "2022-09-02", 2, 2, 2, 1.0, 21.666667, 2, 2, 3, 0.0, 1, 2),
+    ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0, 21.666667, 2, 3, 4, 0.0, 1, 3),
 ]
 SMALL_ROWS = [
     "2022/09/05 01:00,1,800A1B2C3,010,8000EBD30,5.00,US Dollar,5.00,US Dollar,Cash,0",
@@ -86,6 +110,14 @@ def quarantined(spark, curated):
     return spark.read.parquet(str(curated / PREFIX / "quarantine"))
 
 
+def features(spark, curated):
+    """The features table as plain tuples, in EXPECTED_FEATURES' column and row order."""
+    rows = (spark.read.parquet(str(curated / PREFIX / "features"))
+            .selectExpr("bank_id", "account_number", "cast(date AS string) AS date", *FEATURES)
+            .orderBy("bank_id", "account_number", "date").collect())
+    return [tuple(round(v, 6) if isinstance(v, float) else v for v in row) for row in rows]
+
+
 def only_report(curated):
     reports = list((curated / PREFIX / "quality").glob("*.json"))
     assert len(reports) == 1
@@ -130,7 +162,8 @@ def test_partitioned_by_date_and_sorted_by_sender_bank(spark, raw, curated):
 
     root = curated / PREFIX / "transfers"
     dates = sorted(p.name for p in root.glob("date=*"))
-    assert dates == ["date=2022-09-01", "date=2022-09-02", "date=2022-09-03"]
+    assert dates == ["date=2022-08-31", "date=2022-09-01", "date=2022-09-02",
+                     "date=2022-09-03", "date=2022-09-17"]
     for date in dates:
         files = list((root / date).glob("*.parquet"))
         assert len(files) == 1
@@ -251,3 +284,79 @@ def test_threshold_can_be_changed_by_job_argument(spark, raw_with_broken_rows, c
     run_job(raw_with_broken_rows, curated, "--quarantine-threshold", "0.5")
 
     assert (curated / PREFIX / "_SUCCESS").exists()
+
+
+@pytest.fixture
+def raw_without_the_self_transfer(tmp_path):
+    return write_raw(tmp_path / "raw-no-self", "medium",
+                     [row for row in MEDIUM_ROWS if row != SELF_TRANSFER])
+
+
+def test_every_account_day_has_its_hand_computed_feature_values(spark, raw, curated):
+    """Also pins the grain: an idle account gets no row, so C has no 3 Sep and D only 2 Sep."""
+    run_job(raw, curated)
+
+    assert features(spark, curated) == EXPECTED_FEATURES
+
+
+def test_no_account_day_falls_outside_1_to_16_sep(spark, raw, curated):
+    run_job(raw, curated)
+
+    dates = sorted(p.name for p in (curated / PREFIX / "features").glob("date=*"))
+    assert dates == ["date=2022-09-01", "date=2022-09-02", "date=2022-09-03"]
+    # The two out-of-range transfers are in the clean table; only the features are capped.
+    assert transfers(spark, curated).where("date IN ('2022-08-31', '2022-09-17')").count() == 2
+
+
+def test_a_self_transfer_changes_no_feature_value(spark, raw, curated,
+                                                  raw_without_the_self_transfer, tmp_path):
+    run_job(raw, curated)
+    run_job(raw_without_the_self_transfer, tmp_path / "curated-no-self")
+
+    assert features(spark, curated) == features(spark, tmp_path / "curated-no-self")
+
+
+def test_an_account_that_only_sends_has_no_hrs_in_to_out(spark, raw, curated):
+    run_job(raw, curated)
+
+    rows = (spark.read.parquet(str(curated / PREFIX / "features"))
+            .where("account_number = '800D4D4D4'").collect())
+    assert [(r.fan_in, r.fan_out, r.hrs_in_to_out) for r in rows] == [(0, 1, None)]
+
+
+def test_features_carry_no_label_column(spark, raw, curated):
+    run_job(raw, curated)
+
+    columns = spark.read.parquet(str(curated / PREFIX / "features")).columns
+    assert sorted(columns) == sorted(["bank_id", "account_number", "date", *FEATURES])
+
+
+def test_features_are_partitioned_by_date_and_sorted_by_bank(spark, raw, curated):
+    run_job(raw, curated)
+
+    root = curated / PREFIX / "features"
+    for date in sorted(p.name for p in root.glob("date=*")):
+        files = list((root / date).glob("*.parquet"))
+        assert len(files) == 1
+        banks = [r.bank_id for r in spark.read.parquet(str(files[0])).collect()]
+        assert banks == sorted(banks)
+
+
+def test_a_bank_view_gives_that_banks_own_accounts_the_same_features(spark, raw, curated):
+    """Seam 2: `build_features` is the contract with Analyse, so it is called directly here.
+
+    Every transfer of an account involves that account's bank, so a bank view holds all of
+    its own accounts' transfers. Until the counterparty features arrive (#8), that makes
+    bank-view and shared-view features identical for them -- which is ADR 0002's guarantee.
+    """
+    run_job(raw, curated)
+    clean = transfers(spark, curated)
+    bank_view = clean.where("sender_bank_id = '010' OR receiver_bank_id = '010'")
+
+    def features_of_bank_010(df):
+        return (prepare.build_features(df).where("bank_id = '010'")
+                .orderBy(*prepare.FEATURE_KEYS).collect())
+
+    assert bank_view.count() < clean.count()  # the view really is narrower
+    assert len(features_of_bank_010(clean)) == 4
+    assert features_of_bank_010(bank_view) == features_of_bank_010(clean)

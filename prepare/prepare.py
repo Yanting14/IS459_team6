@@ -105,6 +105,100 @@ def clean(df):
             .withColumn("date", F.to_date("timestamp")))
 
 
+# --- Features -----------------------------------------------------------------
+
+# The days the dataset covers. Features are built for these days only, and `history_days`
+# counts window days from the first of them, so a bank view agrees with the shared view on
+# it (ADR 0002). Not yet checked against the real HI-Medium file -- confirm before the
+# first full run (#10).
+FIRST_DAY = "2022-09-01"
+LAST_DAY = "2022-09-16"
+WINDOW_DAYS = 7
+
+ACCOUNT = ["bank_id", "account_number"]  # the glossary's account: never the number alone
+FEATURE_KEYS = [*ACCOUNT, "date"]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "hrs_in_to_out",
+            "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
+            "history_days"]
+
+
+def legs(transfers):
+    """One row per account per transfer: outgoing for its sender, incoming for its receiver.
+
+    A self-transfer moves no money between parties, so it is excluded from every feature.
+    The currency is the one that account dealt in: what it paid, or what it received.
+    """
+    moved = transfers.where("NOT (sender_bank_id = receiver_bank_id "
+                            "AND sender_account_number = receiver_account_number)")
+    both_sides = [F.col("timestamp"), F.to_date("timestamp").alias("date"),
+                  F.col("payment_format"),
+                  (F.col("sender_bank_id") != F.col("receiver_bank_id")).alias("cross_bank")]
+    outgoing = moved.select(
+        F.col("sender_bank_id").alias("bank_id"),
+        F.col("sender_account_number").alias("account_number"),
+        F.col("receiver_bank_id").alias("cp_bank_id"),
+        F.col("receiver_account_number").alias("cp_account_number"),
+        F.lit(True).alias("outgoing"), F.col("payment_currency").alias("currency"), *both_sides)
+    incoming = moved.select(
+        F.col("receiver_bank_id").alias("bank_id"),
+        F.col("receiver_account_number").alias("account_number"),
+        F.col("sender_bank_id").alias("cp_bank_id"),
+        F.col("sender_account_number").alias("cp_account_number"),
+        F.lit(False).alias("outgoing"), F.col("receiving_currency").alias("currency"), *both_sides)
+    return outgoing.unionByName(incoming)
+
+
+def build_features(transfers):
+    """Account-day features over each day's 7-day lookback window.
+
+    A pure function: no I/O, no label, and nothing but the transfers it is given and the
+    dataset's fixed day range. Analyse calls it with transfers filtered to one bank's view to
+    get that bank's features from the same code (ADR 0002), so no feature may depend on which
+    transfers are visible -- only on which account they belong to.
+    """
+    # A day's own transfer count is the same in every window that contains that day.
+    day_legs = legs(transfers).withColumn("transfers_that_day", F.count(F.lit(1)).over(
+        Window.partitionBy(*ACCOUNT, "date")))
+
+    # A transfer falls in the windows of the 7 days from its own day onwards.
+    window_legs = (day_legs
+                   .withColumn("account_day", F.explode(F.sequence(
+                       F.col("date"), F.date_add("date", WINDOW_DAYS - 1))))
+                   .where(F.col("account_day").between(F.to_date(F.lit(FIRST_DAY)),
+                                                       F.to_date(F.lit(LAST_DAY)))))
+
+    # Hours since the latest incoming transfer strictly before each outgoing one. Timestamps
+    # are whole minutes, so a bound one second back is exactly "earlier".
+    earlier_in_window = (Window.partitionBy(*ACCOUNT, "account_day")
+                         .orderBy(F.col("timestamp").cast("long"))
+                         .rangeBetween(Window.unboundedPreceding, -1))
+    last_incoming = F.max(F.when(~F.col("outgoing"),
+                                 F.col("timestamp").cast("long"))).over(earlier_in_window)
+    window_legs = window_legs.withColumn("hrs_since_in", F.when(
+        F.col("outgoing"), (F.col("timestamp").cast("long") - last_incoming) / 3600))
+
+    counterparty = F.array("cp_bank_id", "cp_account_number")  # never the number alone
+    return (window_legs.groupBy(*ACCOUNT, "account_day").agg(
+        F.count_distinct(F.when(~F.col("outgoing"), counterparty)).alias("fan_in"),
+        F.count_distinct(F.when(F.col("outgoing"), counterparty)).alias("fan_out"),
+        F.count_distinct("cp_bank_id").alias("cp_banks"),
+        F.avg(F.col("cross_bank").cast("int")).alias("cross_bank_share"),
+        F.expr("percentile(hrs_since_in, 0.5)").alias("hrs_in_to_out"),
+        F.max("transfers_that_day").alias("max_txn_per_day"),
+        F.count_distinct("date").alias("active_days"),
+        F.count_distinct("payment_format").alias("n_pay_formats"),
+        F.avg((F.col("payment_format") == "ACH").cast("int")).alias("ach_share"),
+        F.count_distinct("currency").alias("n_currencies"),
+        # An account-day exists only where the account itself moved money that day.
+        F.max((F.col("date") == F.col("account_day")).cast("int")).alias("active_on_the_day"))
+        .where("active_on_the_day = 1")
+        .withColumnRenamed("account_day", "date")
+        # A window day before the dataset's first day is not short history: it does not exist.
+        .withColumn("history_days", F.least(
+            F.lit(WINDOW_DAYS), F.datediff("date", F.to_date(F.lit(FIRST_DAY))) + 1))
+        .select(*FEATURE_KEYS, *FEATURES))
+
+
 def write_report(spark: SparkSession, out: str, report: dict) -> None:
     write_text(spark, f"{out}/quality/{report['run_id']}.json", json.dumps(report, indent=2))
     log.info("Quality report: %s", report)
@@ -159,11 +253,16 @@ def main(argv: list[str] | None = None) -> None:
                            f"the {args.quarantine_threshold:.2%} threshold; quality report and "
                            f"quarantined rows written for run {run_id}")
 
-    transfers = clean(checked.where("quarantine_reason IS NULL"))
+    # The feature builder is never handed the laundering mark (ADR 0002).
+    transfers = (clean(checked.where("quarantine_reason IS NULL"))
+                 .select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date"))
     # Leading with date matches the writer's own required sort, so it keeps the bank order.
-    (transfers.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date")
-     .repartition("date").sortWithinPartitions("date", "sender_bank_id")
+    (transfers.repartition("date").sortWithinPartitions("date", "sender_bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfers"))
+
+    (build_features(transfers)
+     .repartition("date").sortWithinPartitions("date", "bank_id")
+     .write.mode("overwrite").partitionBy("date").parquet(f"{out}/features"))
 
     write_report(spark, out, report)
     write_text(spark, marker, "")
