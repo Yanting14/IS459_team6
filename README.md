@@ -41,21 +41,33 @@ s3://is459-team6-raw-<account>/ibm-aml/v1/
 
 ## Prepare job
 
-`prepare/prepare.py` reads the raw transfer file for one dataset size and writes
-clean transfers to the curated zone, then a quality report, then `_SUCCESS`:
+`prepare/prepare.py` reads the raw transfer file for one dataset size, sets aside the
+rows whose data is broken, and writes clean transfers to the curated zone, then a
+quality report, then `_SUCCESS`:
 
 ```
 <curated>/<version-prefix>/
-  transfers/date=YYYY-MM-DD/*.parquet   sorted by sender_bank_id
-  quality/<run_id>.json                 rows_in, rows_accepted
+  transfers/date=YYYY-MM-DD/*.parquet    sorted by sender_bank_id
+  quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
+  quality/<run_id>.json                  rows_in, rows_accepted, rows_quarantined by reason
   _SUCCESS
 ```
+
+A row is quarantined when a field is missing or blank, the timestamp cannot be parsed,
+an amount is not a positive number, or the currency or payment format is not in the
+dataset's known set. Being a self-transfer is not a reason on its own. If the
+quarantined share exceeds `--quarantine-threshold` (default `0.01`), the job writes the
+quality report and then fails, so the evidence survives the failure.
+
+Quarantine is partitioned by run, not by date as ADR-0001 asks of the curated tables:
+it is audit output rather than something to read a day at a time, and a row with an
+unparseable timestamp has no date to partition on.
 
 If `_SUCCESS` already exists under the version prefix, the job does nothing.
 `--input` and `--output` take S3 URIs or local folders:
 
 ```bash
-spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v1
+spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v1 --quarantine-threshold 0.01
 ```
 
 Tests run the job on a small hand-made raw zone with a local Spark session.
