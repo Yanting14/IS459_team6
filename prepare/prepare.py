@@ -152,12 +152,22 @@ def usd_rates(transfers) -> dict[str, float]:
 
 # --- Features -----------------------------------------------------------------
 
-# The days the dataset covers. Features are built for these days only, and `history_days`
-# counts window days from the first of them, so a bank view agrees with the shared view on
-# it (ADR 0002). Not yet checked against the real HI-Medium file -- confirm before the
-# first full run (#10).
-FIRST_DAY = "2022-09-01"
-LAST_DAY = "2022-09-16"
+# Each size's primary period of activity, as the dataset's data card gives it, and the
+# only days features are built for. `history_days` counts window days from the first of
+# them, so a bank view agrees with the shared view on it (ADR 0002). HI and LI share these
+# days, so the variant does not enter.
+#
+# Every file also holds rows past its last day: laundering patterns still playing out when
+# the simulation stopped, which the data card says are kept on purpose so that a pattern
+# can be seen completing. Counted over HI-Small, HI-Medium and HI-Large, that tail is about
+# 0.02% of rows and about 59% laundering. Transfers and rings keep it, because a ring that
+# finishes there is still a ring Q2 has to see whole; no account-day is built from it,
+# because its lookback window holds almost nothing.
+PRIMARY_PERIOD = {
+    "small": ("2022-09-01", "2022-09-10"),
+    "medium": ("2022-09-01", "2022-09-16"),
+    "large": ("2022-08-01", "2022-11-05"),
+}
 WINDOW_DAYS = 7
 
 ACCOUNT = ["bank_id", "account_number"]  # the glossary's account: never the number alone
@@ -217,16 +227,20 @@ def counterparty_features(windows, window_legs):
                  F.max(F.when(~F.col("outgoing"), F.col("fan_out"))).alias("cp_max_fan_out")))
 
 
-def build_features(transfers, rates: dict[str, float]):
+def build_features(transfers, rates: dict[str, float], period: tuple[str, str]):
     """Account-day features over each day's 7-day lookback window.
 
     A pure function: no I/O, no label, and nothing but the transfers it is given, the rates
-    from `usd_rates` and the dataset's fixed day range. Analyse calls it with transfers
-    filtered to one bank's view to get that bank's features from the same code (ADR 0002),
-    so the two views may differ only in `COUNTERPARTY_FEATURES`: every other feature must
-    depend on the account's own transfers alone, all of which any view of its bank holds.
-    A bank view is therefore given the rates derived from the whole dataset.
+    from `usd_rates` and the `period` of days to build for, one of `PRIMARY_PERIOD`.
+    Analyse calls it with transfers filtered to one bank's view to get that bank's features
+    from the same code (ADR 0002), so the two views may differ only in
+    `COUNTERPARTY_FEATURES`: every other feature must depend on the account's own transfers
+    alone, all of which any view of its bank holds. A bank view is therefore given the
+    rates derived from the whole dataset, and the same period, since a view that moved
+    either of them would no longer be comparable with the shared view.
     """
+    first_day, last_day = period
+
     # A day's own transfer count is the same in every window that contains that day.
     day_legs = (legs(transfers).withColumn("transfers_that_day", F.count(F.lit(1)).over(
         Window.partitionBy(*ACCOUNT, "date")))
@@ -237,8 +251,8 @@ def build_features(transfers, rates: dict[str, float]):
     window_legs = (day_legs
                    .withColumn("account_day", F.explode(F.sequence(
                        F.col("date"), F.date_add("date", WINDOW_DAYS - 1))))
-                   .where(F.col("account_day").between(F.to_date(F.lit(FIRST_DAY)),
-                                                       F.to_date(F.lit(LAST_DAY)))))
+                   .where(F.col("account_day").between(F.to_date(F.lit(first_day)),
+                                                       F.to_date(F.lit(last_day)))))
 
     # Hours since the latest incoming transfer strictly before each outgoing one. Timestamps
     # are whole minutes, so a bound one second back is exactly "earlier".
@@ -275,7 +289,7 @@ def build_features(transfers, rates: dict[str, float]):
         .withColumnRenamed("account_day", "date")
         # A window day before the dataset's first day is not short history: it does not exist.
         .withColumn("history_days", F.least(
-            F.lit(WINDOW_DAYS), F.datediff("date", F.to_date(F.lit(FIRST_DAY))) + 1))
+            F.lit(WINDOW_DAYS), F.datediff("date", F.to_date(F.lit(first_day))) + 1))
         # Money that came in and left again in equal measure, where 1 is a pure conduit.
         # Nothing moved either way is not a conduit, and the ratio would be 0/0.
         .withColumn("pass_through", F.when(F.greatest("usd_in", "usd_out") == 0, F.lit(0.0))
@@ -342,7 +356,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--size", default="medium")
+    # Rejected here rather than after a 3 GB read, and the table is the list of sizes.
+    parser.add_argument("--size", default="medium", choices=sorted(PRIMARY_PERIOD))
     parser.add_argument("--version-prefix", default="ibm-aml/v1")
     parser.add_argument("--quarantine-threshold", type=float, default=0.01)
     args = parser.parse_args(argv)
@@ -357,6 +372,7 @@ def main(argv: list[str] | None = None) -> None:
     # Timestamps carry no zone; parse and partition them as given.
     spark.conf.set("spark.sql.session.timeZone", "UTC")
 
+    period = PRIMARY_PERIOD[args.size]
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     raw = args.input.rstrip("/")
     raw_rows = with_source(read_transfers(spark, raw, args.size))
@@ -400,11 +416,22 @@ def main(argv: list[str] | None = None) -> None:
     report["self_transfers"] = self_transfers.count()
     report["self_transfers_laundering"] = self_transfers.where("laundering_mark = 1").count()
 
+    # The days and banks the run actually saw, rather than the ones FIRST_DAY, LAST_DAY and
+    # ADR-0001 assume. Reported here because the curated tables are not in the Glue catalog,
+    # so reading these back afterwards would cost another job.
+    seen = accepted.agg(F.min("date"), F.max("date")).first()
+    report["first_day"], report["last_day"] = str(seen[0]), str(seen[1])
+    report["banks"] = (accepted.select("sender_bank_id")
+                       .union(accepted.select("receiver_bank_id")).distinct().count())
+    # Which days were featurised, beside the days the input held: the two differ by the
+    # tail, and a run should say so rather than leave it to be worked out.
+    report["primary_period"] = list(period)
+
     # Leading with date matches the writer's own required sort, so it keeps the bank order.
     (transfers.repartition("date").sortWithinPartitions("date", "sender_bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfers"))
 
-    features = build_features(transfers, rates).cache()
+    features = build_features(transfers, rates, period).cache()
     (features.repartition("date").sortWithinPartitions("date", "bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/features"))
 

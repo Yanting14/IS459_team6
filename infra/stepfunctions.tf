@@ -151,10 +151,15 @@ resource "aws_iam_role_policy" "pipeline" {
         Resource = [aws_emrserverless_application.spark.arn, "${aws_emrserverless_application.spark.arn}/jobruns/*"]
       },
       {
-        # runTask.sync waits for the task via this managed EventBridge rule.
-        Effect   = "Allow"
-        Action   = ["events:PutTargets", "events:PutRule", "events:DescribeRule"]
-        Resource = "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForECSTaskRule"
+        # Every .sync step waits on an EventBridge rule that Step Functions creates and
+        # names itself, one per integration. UpdateStateMachine checks this role can create
+        # each of them, so a missing name fails the apply rather than the first run.
+        Effect = "Allow"
+        Action = ["events:PutTargets", "events:PutRule", "events:DescribeRule"]
+        Resource = [
+          "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForECSTaskRule",
+          "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForEMRServerlessJobRule",
+        ]
       },
     ]
   })
@@ -164,6 +169,11 @@ resource "aws_sfn_state_machine" "pipeline" {
   name       = "${var.project}-pipeline"
   role_arn   = aws_iam_role.pipeline.arn
   definition = jsonencode(local.pipeline_definition)
+
+  # The definition names the role's permissions but not the policy holding them, and the
+  # API validates them as it writes. Without this, a new .sync step can be applied before
+  # the permission it needs.
+  depends_on = [aws_iam_role_policy.pipeline]
 }
 
 # --- Daily trigger ------------------------------------------------------------
