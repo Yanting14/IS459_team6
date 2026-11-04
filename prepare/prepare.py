@@ -231,11 +231,13 @@ def build_features(transfers, rates: dict[str, float], period: tuple[str, str]):
     """Account-day features over each day's 7-day lookback window.
 
     A pure function: no I/O, no label, and nothing but the transfers it is given, the rates
-    from `usd_rates` and the `period` of days to build for, one of `PRIMARY_PERIOD`. Analyse calls it with transfers
-    filtered to one bank's view to get that bank's features from the same code (ADR 0002),
-    so the two views may differ only in `COUNTERPARTY_FEATURES`: every other feature must
-    depend on the account's own transfers alone, all of which any view of its bank holds.
-    A bank view is therefore given the rates derived from the whole dataset.
+    from `usd_rates` and the `period` of days to build for, one of `PRIMARY_PERIOD`.
+    Analyse calls it with transfers filtered to one bank's view to get that bank's features
+    from the same code (ADR 0002), so the two views may differ only in
+    `COUNTERPARTY_FEATURES`: every other feature must depend on the account's own transfers
+    alone, all of which any view of its bank holds. A bank view is therefore given the
+    rates derived from the whole dataset, and the same period, since a view that moved
+    either of them would no longer be comparable with the shared view.
     """
     first_day, last_day = period
 
