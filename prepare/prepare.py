@@ -144,9 +144,13 @@ WINDOW_DAYS = 7
 
 ACCOUNT = ["bank_id", "account_number"]  # the glossary's account: never the number alone
 FEATURE_KEYS = [*ACCOUNT, "date"]
-FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "usd_in", "usd_out",
-            "max_usd", "pass_through", "hrs_in_to_out", "max_txn_per_day", "active_days",
-            "n_pay_formats", "ach_share", "n_currencies", "history_days"]
+# The only two features computed from a counterparty's own transfers rather than the
+# account's, so the only two a bank view may change (ADR 0002).
+COUNTERPARTY_FEATURES = ["cp_max_fan_in", "cp_max_fan_out"]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", *COUNTERPARTY_FEATURES,
+            "usd_in", "usd_out", "max_usd", "pass_through", "hrs_in_to_out",
+            "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
+            "history_days"]
 
 
 def legs(transfers):
@@ -178,14 +182,33 @@ def legs(transfers):
     return outgoing.unionByName(incoming)
 
 
+def counterparty_features(windows, window_legs):
+    """The highest `fan_in` among the accounts an account pays, and the highest `fan_out`
+    among the accounts paying it, read off those counterparties' own rows for the same
+    window and day.
+
+    Every transfer gives both of its accounts a leg over the same account-days, so a
+    counterparty always has a row of its own to read -- even on a day it was itself idle,
+    which is why `windows` is joined before the idle days are dropped. An account with no
+    counterparty on one side keeps a null there.
+    """
+    counterparties = windows.select("account_day", "fan_in", "fan_out",
+                                    *(F.col(c).alias(f"cp_{c}") for c in ACCOUNT))
+    return (window_legs.join(counterparties, ["account_day", *(f"cp_{c}" for c in ACCOUNT)])
+            .groupBy(*ACCOUNT, "account_day")
+            .agg(F.max(F.when(F.col("outgoing"), F.col("fan_in"))).alias("cp_max_fan_in"),
+                 F.max(F.when(~F.col("outgoing"), F.col("fan_out"))).alias("cp_max_fan_out")))
+
+
 def build_features(transfers, rates: dict[str, float]):
     """Account-day features over each day's 7-day lookback window.
 
     A pure function: no I/O, no label, and nothing but the transfers it is given, the rates
     from `usd_rates` and the dataset's fixed day range. Analyse calls it with transfers
     filtered to one bank's view to get that bank's features from the same code (ADR 0002),
-    so no feature may depend on which transfers are visible -- only on which account they
-    belong to. A bank view is therefore given the rates derived from the whole dataset.
+    so the two views may differ only in `COUNTERPARTY_FEATURES`: every other feature must
+    depend on the account's own transfers alone, all of which any view of its bank holds.
+    A bank view is therefore given the rates derived from the whole dataset.
     """
     # A day's own transfer count is the same in every window that contains that day.
     day_legs = (legs(transfers).withColumn("transfers_that_day", F.count(F.lit(1)).over(
@@ -211,7 +234,7 @@ def build_features(transfers, rates: dict[str, float]):
         F.col("outgoing"), (F.col("timestamp").cast("long") - last_incoming) / 3600))
 
     counterparty = F.array("cp_bank_id", "cp_account_number")  # never the number alone
-    return (window_legs.groupBy(*ACCOUNT, "account_day").agg(
+    windows = (window_legs.groupBy(*ACCOUNT, "account_day").agg(
         F.count_distinct(F.when(~F.col("outgoing"), counterparty)).alias("fan_in"),
         F.count_distinct(F.when(F.col("outgoing"), counterparty)).alias("fan_out"),
         F.count_distinct("cp_bank_id").alias("cp_banks"),
@@ -228,8 +251,10 @@ def build_features(transfers, rates: dict[str, float]):
         F.avg((F.col("payment_format") == "ACH").cast("int")).alias("ach_share"),
         F.count_distinct("currency").alias("n_currencies"),
         # An account-day exists only where the account itself moved money that day.
-        F.max((F.col("date") == F.col("account_day")).cast("int")).alias("active_on_the_day"))
-        .where("active_on_the_day = 1")
+        F.max((F.col("date") == F.col("account_day")).cast("int")).alias("active_on_the_day")))
+
+    return (windows.where("active_on_the_day = 1")
+        .join(counterparty_features(windows, window_legs), [*ACCOUNT, "account_day"], "left")
         .withColumnRenamed("account_day", "date")
         # A window day before the dataset's first day is not short history: it does not exist.
         .withColumn("history_days", F.least(

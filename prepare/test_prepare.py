@@ -16,7 +16,9 @@ SELF_TRANSFER = ("2022/09/01 00:20,3208,8000F4580,3208,8000F4580,50.00,US Dollar
                  "US Dollar,Reinvestment,0")
 # A few banks (one with a leading zero) over three days. Accounts A = (010, 8000EBD30),
 # B = (3208, 8000F4580) and C = (1, 800A1B2C3) both send and receive; D = (010, 800D4D4D4)
-# only ever sends, and only within its own bank. The last two rows fall outside the
+# only ever sends, and only within its own bank. C -> A -> B on 1 Sep is the two-hop
+# chain the counterparty features are hand-computed from: A pays an account that is itself
+# paid, and is paid by an account that itself pays. The last two rows fall outside the
 # dataset's 1 to 16 Sep, so they belong in the clean transfers but in no account-day.
 MEDIUM_ROWS = [
     "2022/09/01 00:20,010,8000EBD30,3208,8000F4580,1000.00,US Dollar,1000.00,US Dollar,Wire,0",
@@ -31,32 +33,33 @@ MEDIUM_ROWS = [
     "2022/08/31 12:00,7,800E5E5E5,7,800F6F6F6,10.00,US Dollar,10.00,US Dollar,Cash,0",
     "2022/09/17 12:00,010,8000EBD30,3208,8000F4580,20.00,US Dollar,20.00,US Dollar,Cash,0",
 ]
-FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "usd_in", "usd_out",
-            "max_usd", "pass_through", "hrs_in_to_out", "max_txn_per_day", "active_days",
-            "n_pay_formats", "ach_share", "n_currencies", "history_days"]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "cp_max_fan_in",
+            "cp_max_fan_out", "usd_in", "usd_out", "max_usd", "pass_through",
+            "hrs_in_to_out", "max_txn_per_day", "active_days", "n_pay_formats", "ach_share",
+            "n_currencies", "history_days"]
 # The only cross-currency transfer pays 800 US Dollar for 700 Euro, so the Euro's rate is
 # 700/800 = 0.875 Euro per dollar and the 700 Euro that account received is 800 USD.
 EXPECTED_RATES = {"Euro": 0.875, "US Dollar": 1.0}
 # Hand-computed from MEDIUM_ROWS, one row per account-day, ordered by bank then account
 # then day. Columns: the three keys, then FEATURES in order. Floats rounded to 6 places.
 EXPECTED_FEATURES = [
-    ("010", "8000EBD30", "2022-09-01", 1, 1, 2, 1.0,
+    ("010", "8000EBD30", "2022-09-01", 1, 1, 2, 1.0, 1, 1,
      800.0, 1000.0, 1000.0, 0.8, None, 2, 1, 2, 0.5, 2, 1),
-    ("010", "8000EBD30", "2022-09-02", 3, 2, 3, 0.8,
+    ("010", "8000EBD30", "2022-09-02", 3, 2, 3, 0.8, 2, 2,
      1400.0, 1150.0, 1000.0, 0.821429, 2.5, 3, 2, 2, 0.4, 2, 2),
-    ("010", "8000EBD30", "2022-09-03", 3, 2, 3, 0.833333,
+    ("010", "8000EBD30", "2022-09-03", 3, 2, 3, 0.833333, 2, 2,
      1400.0, 1210.0, 1000.0, 0.864286, 13.125, 3, 3, 3, 0.333333, 2, 3),
-    ("010", "800D4D4D4", "2022-09-02", 0, 1, 1, 0.0,
+    ("010", "800D4D4D4", "2022-09-02", 0, 1, 1, 0.0, 3, None,
      0.0, 400.0, 400.0, 0.0, None, 1, 1, 1, 0.0, 1, 2),
-    ("1", "800A1B2C3", "2022-09-01", 1, 1, 2, 1.0,
+    ("1", "800A1B2C3", "2022-09-01", 1, 1, 2, 1.0, 1, 1,
      300.0, 800.0, 800.0, 0.375, None, 2, 1, 2, 0.5, 1, 1),
-    ("1", "800A1B2C3", "2022-09-02", 2, 2, 2, 1.0,
+    ("1", "800A1B2C3", "2022-09-02", 2, 2, 2, 1.0, 3, 2,
      450.0, 890.0, 800.0, 0.505618, 13.483333, 2, 2, 3, 0.5, 1, 2),
-    ("3208", "8000F4580", "2022-09-01", 1, 1, 2, 1.0,
+    ("3208", "8000F4580", "2022-09-01", 1, 1, 2, 1.0, 1, 1,
      1000.0, 300.0, 300.0, 0.3, 11.666667, 2, 1, 2, 0.0, 1, 1),
-    ("3208", "8000F4580", "2022-09-02", 2, 2, 2, 1.0,
+    ("3208", "8000F4580", "2022-09-02", 2, 2, 2, 1.0, 3, 2,
      1090.0, 500.0, 300.0, 0.458716, 21.666667, 2, 2, 3, 0.0, 1, 2),
-    ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0,
+    ("3208", "8000F4580", "2022-09-03", 2, 2, 2, 1.0, 3, 2,
      1150.0, 500.0, 300.0, 0.434783, 21.666667, 2, 3, 4, 0.0, 1, 3),
 ]
 SMALL_ROWS = [
@@ -375,27 +378,44 @@ def test_a_currency_that_never_trades_against_usd_fails_the_job_by_name(
     assert not (curated / PREFIX / "_SUCCESS").exists()
 
 
-def test_pass_through_is_zero_when_no_money_moved(spark):
-    """Both sides zero can only reach `build_features` directly: the job quarantines a
-    zero amount, and this is the contract Analyse calls, so it must not divide 0 by 0."""
-    nothing_moved = spark.sql("""
+def one_transfer(spark, amount):
+    """A lone transfer from A to B, as `build_features` takes it: no raw zone, no job run."""
+    return spark.sql(f"""
         SELECT timestamp('2022-09-01 00:20') AS timestamp,
                '010' AS sender_bank_id, '8000EBD30' AS sender_account_number,
                '3208' AS receiver_bank_id, '8000F4580' AS receiver_account_number,
-               CAST(0 AS DOUBLE) AS amount_paid, CAST(0 AS DOUBLE) AS amount_received,
+               CAST({amount} AS DOUBLE) AS amount_paid,
+               CAST({amount} AS DOUBLE) AS amount_received,
                'US Dollar' AS payment_currency, 'US Dollar' AS receiving_currency,
                'Wire' AS payment_format""")
 
-    rows = prepare.build_features(nothing_moved, EXPECTED_RATES).collect()
+
+def test_pass_through_is_zero_when_no_money_moved(spark):
+    """Both sides zero can only reach `build_features` directly: the job quarantines a
+    zero amount, and this is the contract Analyse calls, so it must not divide 0 by 0."""
+    rows = prepare.build_features(one_transfer(spark, 0), EXPECTED_RATES).collect()
+
     assert [(r.usd_in, r.usd_out, r.pass_through) for r in rows] == [(0.0, 0.0, 0.0)] * 2
 
 
-def test_a_bank_view_gives_that_banks_own_accounts_the_same_features(spark, raw, curated):
+def test_a_counterparty_feature_is_null_where_that_side_has_no_counterparty(spark):
+    """With a single transfer the sender pays an account but no account pays it, and the
+    receiver the other way round, so each is missing exactly one of the two."""
+    rows = (prepare.build_features(one_transfer(spark, 100), EXPECTED_RATES)
+            .orderBy("bank_id").collect())
+
+    assert [(r.bank_id, r.cp_max_fan_in, r.cp_max_fan_out) for r in rows] == [
+        ("010", 1, None), ("3208", None, 1)]
+
+
+def test_a_bank_view_changes_only_the_counterparty_features(spark, raw, curated):
     """Seam 2: `build_features` is the contract with Analyse, so it is called directly here.
 
     Every transfer of an account involves that account's bank, so a bank view holds all of
-    its own accounts' transfers. Until the counterparty features arrive (#8), that makes
-    bank-view and shared-view features identical for them -- which is ADR 0002's guarantee.
+    its own accounts' transfers; only its view of their counterparties is narrower. So the
+    two views agree on every feature but the two counterparty ones, which is ADR 0002's
+    guarantee and the reason Analyse can read a change in its top K as a change in what one
+    bank can see rather than in the code that computed it.
     """
     run_job(raw, curated)
     clean = transfers(spark, curated)
@@ -403,11 +423,16 @@ def test_a_bank_view_gives_that_banks_own_accounts_the_same_features(spark, raw,
     # Rates come from the whole dataset, as Prepare derived them; a bank view is not asked
     # to re-derive them from the fraction of transfers it can see.
     rates = prepare.usd_rates(clean)
+    own = [c for c in prepare.FEATURES if c not in prepare.COUNTERPARTY_FEATURES]
 
-    def features_of_bank_010(df):
+    def features_of_bank_010(df, columns):
         return (prepare.build_features(df, rates).where("bank_id = '010'")
-                .orderBy(*prepare.FEATURE_KEYS).collect())
+                .orderBy(*prepare.FEATURE_KEYS).select(*columns).collect())
 
     assert bank_view.count() < clean.count()  # the view really is narrower
-    assert len(features_of_bank_010(clean)) == 4
-    assert features_of_bank_010(bank_view) == features_of_bank_010(clean)
+    assert len(features_of_bank_010(bank_view, own)) == 4
+    assert (features_of_bank_010(bank_view, [*prepare.FEATURE_KEYS, *own])
+            == features_of_bank_010(clean, [*prepare.FEATURE_KEYS, *own]))
+    # ... and this fixture is one where the two views really do disagree on them.
+    assert (features_of_bank_010(bank_view, prepare.COUNTERPARTY_FEATURES)
+            != features_of_bank_010(clean, prepare.COUNTERPARTY_FEATURES))
