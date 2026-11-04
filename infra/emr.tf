@@ -26,6 +26,13 @@ resource "aws_emrserverless_application" "spark" {
     cpu    = "32 vCPU"
     memory = "128 GB"
   }
+
+  # The API's own defaults, written down: left out, they come back as a change on every
+  # plan. A job that waits longer than this for a free slot is one nobody is watching.
+  scheduler_configuration {
+    max_concurrent_runs   = 15
+    queue_timeout_minutes = 360
+  }
 }
 
 # --- Job code -----------------------------------------------------------------
