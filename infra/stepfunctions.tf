@@ -58,10 +58,41 @@ locals {
         Next = "Prepare"
       }
 
-      # Placeholder until the EMR Serverless prepare job exists.
       Prepare = {
-        Type = "Pass"
-        End  = true
+        Type     = "Task"
+        Resource = "arn:aws:states:::emr-serverless:startJobRun.sync"
+        Parameters = {
+          ApplicationId           = aws_emrserverless_application.spark.id
+          ExecutionRoleArn        = aws_iam_role.emr_job.arn
+          Name                    = "${var.project}-prepare"
+          ExecutionTimeoutMinutes = 60
+          JobDriver = {
+            SparkSubmit = {
+              EntryPoint = local.prepare_entry_point
+              EntryPointArguments = [
+                "--input", "s3://${aws_s3_bucket.raw.id}/${var.raw_prefix}",
+                "--output", "s3://${aws_s3_bucket.curated.id}",
+                "--version-prefix", var.curated_prefix,
+              ]
+            }
+          }
+          ConfigurationOverrides = {
+            MonitoringConfiguration = {
+              S3MonitoringConfiguration = { LogUri = local.emr_log_uri }
+            }
+          }
+        }
+        # A backstop above the job's own 60-minute limit, in case .sync never hears back.
+        TimeoutSeconds = 4200
+        # Only service-level transients are retried: a job that failed on its own data has
+        # already spent its hour, and the quality gate would reach the same verdict again.
+        Retry = [{
+          ErrorEquals     = ["EmrServerless.ThrottlingException", "EmrServerless.InternalServerException"]
+          IntervalSeconds = 30
+          MaxAttempts     = 3
+          BackoffRate     = 2
+        }]
+        End = true
       }
     }
   }
@@ -106,7 +137,18 @@ resource "aws_iam_role_policy" "pipeline" {
       {
         Effect   = "Allow"
         Action   = "iam:PassRole"
-        Resource = [aws_iam_role.ingest_execution.arn, aws_iam_role.ingest_task.arn]
+        Resource = [aws_iam_role.ingest_execution.arn, aws_iam_role.ingest_task.arn, aws_iam_role.emr_job.arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "emr-serverless:StartJobRun"
+        Resource = aws_emrserverless_application.spark.arn
+      },
+      {
+        # startJobRun.sync polls the run and tags it to track ownership.
+        Effect   = "Allow"
+        Action   = ["emr-serverless:GetJobRun", "emr-serverless:CancelJobRun", "emr-serverless:TagResource"]
+        Resource = [aws_emrserverless_application.spark.arn, "${aws_emrserverless_application.spark.arn}/jobruns/*"]
       },
       {
         # runTask.sync waits for the task via this managed EventBridge rule.

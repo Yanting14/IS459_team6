@@ -5,7 +5,8 @@ AML detection pipeline on AWS (us-east-1), built with Terraform.
 ## Layout
 
 ```
-infra/                 Terraform (S3 raw zone, ingest task, Step Functions, schedule)
+infra/                 Terraform (S3 raw + curated zones, ingest task, EMR Serverless,
+                       Step Functions, schedule)
 ingest/                Fargate container: Kaggle -> S3 raw zone
 prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
@@ -21,11 +22,23 @@ EventBridge (daily, off by default) / manual start
      -> yes: skip to Prepare
      -> no:  Ingest (ECS Fargate)  download from Kaggle, unzip, upload to S3,
                                    write manifest.json, then _SUCCESS
-     -> Prepare (placeholder for the EMR Serverless job)
+     -> Prepare (EMR Serverless)   raw zone -> curated zone, waits for the job
 ```
 
 The dataset is static, so ingestion really runs once. Daily runs skip it. If the
 task fails partway, a re-run skips files already in S3 and carries on.
+
+Prepare runs on a shared EMR Serverless Spark application (`is459-team6-spark`,
+EMR 7, at most 32 vCPU and 128 GB, auto-stopping after 15 minutes idle) that
+Training and Analyse will reuse. Terraform uploads `prepare/prepare.py` to
+`s3://<curated>/code/prepare.py`, and the state machine starts it synchronously with
+a 1-hour timeout, retrying only service-level transients: a job that failed on its
+own data would spend another hour reaching the same verdict. Spark driver and
+executor logs land under `s3://<curated>/logs/`.
+
+The job runs as `is459-team6-emr-job`, which can read the raw prefix and the job
+code and read and write the curated prefix. It has no write access to the raw
+bucket.
 
 Raw zone layout:
 
@@ -63,8 +76,11 @@ Quarantine is partitioned by run, not by date as ADR-0001 asks of the curated ta
 it is audit output rather than something to read a day at a time, and a row with an
 unparseable timestamp has no date to partition on.
 
-If `_SUCCESS` already exists under the version prefix, the job does nothing.
-`--input` and `--output` take S3 URIs or local folders:
+If `_SUCCESS` already exists under the version prefix, the job does nothing, so
+bumping `curated_prefix` is what forces a fresh build.
+
+`--input` and `--output` take S3 URIs or local folders, which is how the same script
+runs on EMR Serverless and under the local tests:
 
 ```bash
 spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v1 --quarantine-threshold 0.01
@@ -121,5 +137,6 @@ group `/ecs/is459-team6-ingest`.
 | `dataset_variants` | `["HI"]` | Add `"LI"` for the low-illicit-ratio files |
 | `dataset_sizes` | `["Medium", "Large"]` | |
 | `raw_prefix` | `ibm-aml/v1` | Change to `v2` to force a fresh ingest |
+| `curated_prefix` | `ibm-aml/v1` | Change to `v2` to force a fresh Prepare build |
 | `enable_daily_schedule` | `false` | Turn on once the full pipeline exists |
 | `force_destroy_buckets` | `false` | Set `true` before `terraform destroy` at project end |

@@ -13,6 +13,8 @@ Arguments:
                            fails, as a fraction (default 0.01, i.e. 1%)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import logging
