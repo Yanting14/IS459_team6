@@ -131,12 +131,20 @@ and then stops. What follows is a decaying tail of stragglers:
 28 Sep          7
 ```
 
+This is the dataset's own design, not a surprise: the data card calls Sep 1-16 HI-Medium's
+"primary period", and its author explains the tail as laundering patterns that take several
+days to play out and so run past the day the simulation stops.
+
 All twelve tail days together hold 6,987 rows, 0.022% of the file, so the window loses
 no meaningful volume. It does lose signal out of proportion to its size: 58.5% of those
 rows carry the laundering mark against 0.098% in the main period, which is 4,084 of the
 dataset's 35,230 laundering transfers, or 11.6%. Those account-days would have nearly
 empty 7-day lookback windows, so they are poor training rows, but the trade is a real
 one and is recorded on #2 rather than decided here.
+
+`FIRST_DAY` and `LAST_DAY` are HI-Medium's days and `--size` does not move them, so a run
+on HI-Large would featurise 16 days of a dataset that runs from 1 Aug to 5 Nov. Story 21's
+one-argument scale-up needs them derived per size first.
 
 `--input` and `--output` take S3 URIs or local folders, which is how the same script
 runs on EMR Serverless and under the local tests:

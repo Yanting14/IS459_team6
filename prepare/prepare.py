@@ -156,6 +156,12 @@ def usd_rates(transfers) -> dict[str, float]:
 # counts window days from the first of them, so a bank view agrees with the shared view on
 # it (ADR 0002). Not yet checked against the real HI-Medium file -- confirm before the
 # first full run (#10).
+# HI-Medium's primary period of activity, as the dataset's data card gives it. Transfers
+# exist past the last day: laundering patterns that were still playing out when the
+# simulation stopped, which the data card documents and which are no basis for an
+# account-day, since their lookback windows are all but empty.
+# shortcut: these are HI-Medium's days, and --size does not move them. HI-Large runs from
+# 1 Aug to 5 Nov, so derive them per size before any run on it.
 FIRST_DAY = "2022-09-01"
 LAST_DAY = "2022-09-16"
 WINDOW_DAYS = 7
