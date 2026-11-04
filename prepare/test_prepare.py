@@ -83,17 +83,22 @@ BROKEN_ROWS = [
 ]
 BROKEN_REASONS = ["missing_field", "unparsable_timestamp", "unparsable_amount",
                   "non_positive_amount", "unknown_currency", "unknown_payment_format"]
-# The patterns format: each ring is a block of transfer rows between a BEGIN and an END
-# line naming its shape. These list the laundering transfers from MEDIUM_ROWS, the second
-# ring two of them so that one ring id covers all of its rows.
+# The patterns format, copied from the real HI-Medium file: each ring is a block of
+# transfer rows between a BEGIN and an END line naming its shape, and a blank line follows
+# each block. The second ring's shape carries the size parameter the real file puts on most
+# of them, so the expectation below pins that only the shape becomes the pattern type. The
+# rows are the laundering transfers from MEDIUM_ROWS, two of them in the second ring so
+# that one ring id covers all of its rows.
 PATTERN_LINES = [
-    "BEGIN LAUNDERING ATTEMPT - FAN-OUT",
+    "BEGIN LAUNDERING ATTEMPT - STACK",
     LAUNDERING_TRANSFER,
-    "END LAUNDERING ATTEMPT - FAN-OUT",
-    "BEGIN LAUNDERING ATTEMPT - CYCLE",
+    "END LAUNDERING ATTEMPT - STACK",
+    "",
+    "BEGIN LAUNDERING ATTEMPT - CYCLE:  Max 3 hops",
     LAUNDERING_SELF_TRANSFER,
     LAUNDERING_TRANSFER,
-    "END LAUNDERING ATTEMPT - CYCLE",
+    "END LAUNDERING ATTEMPT - CYCLE:  Max 3 hops",
+    "",
 ]
 TRANS_CSV = "HI-Medium_Trans.csv"
 PREFIX = "ibm-aml/v1"
@@ -451,7 +456,7 @@ def test_rings_carry_a_ring_id_a_pattern_type_and_the_transfers_own_fields(spark
             .selectExpr("*", "date_format(timestamp, 'yyyy/MM/dd HH:mm') AS ts")
             .orderBy("ring_id", "ts").collect())
     assert [(r.ring_id, r.pattern_type, ring_line(r)) for r in rows] == [
-        (1, "FAN-OUT", LAUNDERING_TRANSFER),
+        (1, "STACK", LAUNDERING_TRANSFER),
         (2, "CYCLE", LAUNDERING_TRANSFER),
         (2, "CYCLE", LAUNDERING_SELF_TRANSFER),
     ]

@@ -47,9 +47,10 @@ SELF_TRANSFER = ("sender_bank_id = receiver_bank_id "
                  "AND sender_account_number = receiver_account_number")
 
 # Each ring in the patterns file is a block of transfer rows wrapped in a BEGIN and an END
-# line, both naming the ring's shape. Not yet checked against the real HI-Medium file --
-# confirm before the first full run (#10).
-RING_BEGIN = r"^BEGIN LAUNDERING ATTEMPT\s*-\s*(.*\S)\s*$"
+# line, both naming the ring's shape. The real HI-Medium file names it either on its own
+# ("STACK") or followed by that ring's size parameter ("CYCLE:  Max 10 hops"), so the shape
+# is what precedes the colon: the eight pattern types, not seventy-odd variants of them.
+RING_BEGIN = r"^BEGIN LAUNDERING ATTEMPT\s*-\s*([^:]*[^:\s])"
 TRANSFER_LINE = r"^\d{4}/\d{2}/\d{2} "
 LABEL = "laundered_24h"
 
