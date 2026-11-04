@@ -14,6 +14,12 @@ HEADER = ("Timestamp,From Bank,Account,To Bank,Account,Amount Received,Receiving
 
 SELF_TRANSFER = ("2022/09/01 00:20,3208,8000F4580,3208,8000F4580,50.00,US Dollar,50.00,"
                  "US Dollar,Reinvestment,0")
+LAUNDERING_TRANSFER = ("2022/09/01 09:15,1,800A1B2C3,010,8000EBD30,700.00,Euro,800.00,"
+                       "US Dollar,ACH,1")
+# A self-transfer that is itself marked as laundering, so the account took part in a
+# laundering transfer on a day that is no account-day at all.
+LAUNDERING_SELF_TRANSFER = ("2022/09/03 18:00,010,800D4D4D4,010,800D4D4D4,25.00,US Dollar,"
+                            "25.00,US Dollar,Reinvestment,1")
 # A few banks (one with a leading zero) over three days. Accounts A = (010, 8000EBD30),
 # B = (3208, 8000F4580) and C = (1, 800A1B2C3) both send and receive; D = (010, 800D4D4D4)
 # only ever sends, and only within its own bank. C -> A -> B on 1 Sep is the two-hop
@@ -23,13 +29,14 @@ SELF_TRANSFER = ("2022/09/01 00:20,3208,8000F4580,3208,8000F4580,50.00,US Dollar
 MEDIUM_ROWS = [
     "2022/09/01 00:20,010,8000EBD30,3208,8000F4580,1000.00,US Dollar,1000.00,US Dollar,Wire,0",
     SELF_TRANSFER,
-    "2022/09/01 09:15,1,800A1B2C3,010,8000EBD30,700.00,Euro,800.00,US Dollar,ACH,1",
+    LAUNDERING_TRANSFER,
     "2022/09/01 12:00,3208,8000F4580,1,800A1B2C3,300.00,US Dollar,300.00,US Dollar,Cheque,0",
     "2022/09/02 06:00,010,800D4D4D4,010,8000EBD30,400.00,US Dollar,400.00,US Dollar,Wire,0",
     "2022/09/02 08:00,3208,8000F4580,010,8000EBD30,200.00,US Dollar,200.00,US Dollar,Wire,0",
     "2022/09/02 10:30,010,8000EBD30,1,800A1B2C3,150.00,US Dollar,150.00,US Dollar,ACH,0",
     "2022/09/02 23:59,1,800A1B2C3,3208,8000F4580,90.00,US Dollar,90.00,US Dollar,Credit Card,0",
     "2022/09/03 07:45,010,8000EBD30,3208,8000F4580,60.00,US Dollar,60.00,US Dollar,Cash,0",
+    LAUNDERING_SELF_TRANSFER,
     "2022/08/31 12:00,7,800E5E5E5,7,800F6F6F6,10.00,US Dollar,10.00,US Dollar,Cash,0",
     "2022/09/17 12:00,010,8000EBD30,3208,8000F4580,20.00,US Dollar,20.00,US Dollar,Cash,0",
 ]
@@ -76,6 +83,18 @@ BROKEN_ROWS = [
 ]
 BROKEN_REASONS = ["missing_field", "unparsable_timestamp", "unparsable_amount",
                   "non_positive_amount", "unknown_currency", "unknown_payment_format"]
+# The patterns format: each ring is a block of transfer rows between a BEGIN and an END
+# line naming its shape. These list the laundering transfers from MEDIUM_ROWS, the second
+# ring two of them so that one ring id covers all of its rows.
+PATTERN_LINES = [
+    "BEGIN LAUNDERING ATTEMPT - FAN-OUT",
+    LAUNDERING_TRANSFER,
+    "END LAUNDERING ATTEMPT - FAN-OUT",
+    "BEGIN LAUNDERING ATTEMPT - CYCLE",
+    LAUNDERING_SELF_TRANSFER,
+    LAUNDERING_TRANSFER,
+    "END LAUNDERING ATTEMPT - CYCLE",
+]
 TRANS_CSV = "HI-Medium_Trans.csv"
 PREFIX = "ibm-aml/v1"
 
@@ -84,6 +103,10 @@ def write_raw(root, size, rows):
     folder = root / "transactions" / "variant=HI" / f"size={size}"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"HI-{size.capitalize()}_Trans.csv").write_text("\n".join([HEADER, *rows]) + "\n")
+    patterns = root / "patterns" / "variant=HI" / f"size={size}"
+    patterns.mkdir(parents=True, exist_ok=True)
+    (patterns / f"HI-{size.capitalize()}_Patterns.txt").write_text(
+        "\n".join(PATTERN_LINES) + "\n")
     return root
 
 
@@ -133,6 +156,10 @@ def features(spark, curated):
     return [tuple(round(v, 6) if isinstance(v, float) else v for v in row) for row in rows]
 
 
+def labels(spark, curated):
+    return spark.read.parquet(str(curated / PREFIX / "labels"))
+
+
 def only_report(curated):
     reports = list((curated / PREFIX / "quality").glob("*.json"))
     assert len(reports) == 1
@@ -169,7 +196,9 @@ def test_self_transfers_are_kept(spark, raw, curated):
     df = transfers(spark, curated)
     self_transfers = df.where("sender_bank_id = receiver_bank_id "
                               "AND sender_account_number = receiver_account_number").collect()
-    assert [(r.sender_bank_id, r.payment_format) for r in self_transfers] == [("3208", "Reinvestment")]
+    assert sorted((r.sender_bank_id, r.sender_account_number, r.payment_format)
+                  for r in self_transfers) == [("010", "800D4D4D4", "Reinvestment"),
+                                               ("3208", "8000F4580", "Reinvestment")]
 
 
 def test_partitioned_by_date_and_sorted_by_sender_bank(spark, raw, curated):
@@ -302,9 +331,10 @@ def test_threshold_can_be_changed_by_job_argument(spark, raw_with_broken_rows, c
 
 
 @pytest.fixture
-def raw_without_the_self_transfer(tmp_path):
+def raw_without_self_transfers(tmp_path):
+    self_transfers = (SELF_TRANSFER, LAUNDERING_SELF_TRANSFER)
     return write_raw(tmp_path / "raw-no-self", "medium",
-                     [row for row in MEDIUM_ROWS if row != SELF_TRANSFER])
+                     [row for row in MEDIUM_ROWS if row not in self_transfers])
 
 
 def test_every_account_day_has_its_hand_computed_feature_values(spark, raw, curated):
@@ -324,9 +354,9 @@ def test_no_account_day_falls_outside_1_to_16_sep(spark, raw, curated):
 
 
 def test_a_self_transfer_changes_no_feature_value(spark, raw, curated,
-                                                  raw_without_the_self_transfer, tmp_path):
+                                                  raw_without_self_transfers, tmp_path):
     run_job(raw, curated)
-    run_job(raw_without_the_self_transfer, tmp_path / "curated-no-self")
+    run_job(raw_without_self_transfers, tmp_path / "curated-no-self")
 
     assert features(spark, curated) == features(spark, tmp_path / "curated-no-self")
 
@@ -376,6 +406,64 @@ def test_a_currency_that_never_trades_against_usd_fails_the_job_by_name(
         run_job(raw_with_an_unpriced_currency, curated)
 
     assert not (curated / PREFIX / "_SUCCESS").exists()
+
+
+def test_a_laundering_transfer_labels_its_account_day_and_leaves_the_others_zero(
+        spark, raw, curated):
+    run_job(raw, curated)
+
+    df = labels(spark, curated)
+    ones = sorted((r.bank_id, r.account_number, str(r.date))
+                  for r in df.where("laundered_24h = 1").collect())
+    assert ones == [("010", "8000EBD30", "2022-09-01"), ("1", "800A1B2C3", "2022-09-01")]
+    assert df.where("laundered_24h = 0").count() == len(EXPECTED_FEATURES) - len(ones)
+
+
+def test_labels_have_exactly_the_account_features_grain(spark, raw, curated):
+    """The laundering self-transfer is what pins this: (010, 800D4D4D4) moved money only to
+    itself on 3 Sep, so that day is no account-day, has no features row, and so gets no
+    label row either -- even though the account took part in a laundering transfer on it.
+    """
+    run_job(raw, curated)
+
+    keys = ["bank_id", "account_number", "date"]
+    feature_days = spark.read.parquet(str(curated / PREFIX / "features")).select(*keys)
+    label_days = labels(spark, curated).select(*keys)
+    assert label_days.count() == feature_days.count() == len(EXPECTED_FEATURES)
+    assert feature_days.exceptAll(label_days).count() == 0
+    assert label_days.exceptAll(feature_days).count() == 0
+    assert sorted(p.name for p in (curated / PREFIX / "labels").glob("date=*")) == [
+        "date=2022-09-01", "date=2022-09-02", "date=2022-09-03"]
+
+
+def ring_line(r):
+    """A ring row written back as its patterns-file line, so the fixture is the expectation."""
+    return ",".join([r.ts, r.sender_bank_id, r.sender_account_number, r.receiver_bank_id,
+                     r.receiver_account_number, f"{r.amount_received:.2f}",
+                     r.receiving_currency, f"{r.amount_paid:.2f}", r.payment_currency,
+                     r.payment_format, str(r.laundering_mark)])
+
+
+def test_rings_carry_a_ring_id_a_pattern_type_and_the_transfers_own_fields(spark, raw, curated):
+    run_job(raw, curated)
+
+    rows = (spark.read.parquet(str(curated / PREFIX / "rings"))
+            .selectExpr("*", "date_format(timestamp, 'yyyy/MM/dd HH:mm') AS ts")
+            .orderBy("ring_id", "ts").collect())
+    assert [(r.ring_id, r.pattern_type, ring_line(r)) for r in rows] == [
+        (1, "FAN-OUT", LAUNDERING_TRANSFER),
+        (2, "CYCLE", LAUNDERING_TRANSFER),
+        (2, "CYCLE", LAUNDERING_SELF_TRANSFER),
+    ]
+    assert not list((curated / PREFIX / "rings").glob("*=*"))  # not partitioned
+
+
+def test_quality_report_counts_self_transfers_and_the_laundering_ones(raw, curated, spark):
+    run_job(raw, curated)
+
+    report = only_report(curated)
+    assert report["self_transfers"] == 2
+    assert report["self_transfers_laundering"] == 1
 
 
 def one_transfer(spark, amount):

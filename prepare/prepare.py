@@ -41,6 +41,17 @@ KNOWN_CURRENCIES = ["Australian Dollar", "Bitcoin", "Brazil Real", "Canadian Dol
                     "UK Pound", "US Dollar", "Yen", "Yuan"]
 KNOWN_PAYMENT_FORMATS = ["ACH", "Bitcoin", "Cash", "Cheque", "Credit Card", "Reinvestment", "Wire"]
 USD = "US Dollar"
+# A transfer between one account and itself: it moves no money between parties, so no
+# feature counts it, but it is still part of that account's timeline.
+SELF_TRANSFER = ("sender_bank_id = receiver_bank_id "
+                 "AND sender_account_number = receiver_account_number")
+
+# Each ring in the patterns file is a block of transfer rows wrapped in a BEGIN and an END
+# line, both naming the ring's shape. Not yet checked against the real HI-Medium file --
+# confirm before the first full run (#10).
+RING_BEGIN = r"^BEGIN LAUNDERING ATTEMPT\s*-\s*(.*\S)\s*$"
+TRANSFER_LINE = r"^\d{4}/\d{2}/\d{2} "
+LABEL = "laundered_24h"
 
 
 def fs_and_path(spark: SparkSession, path: str):
@@ -64,6 +75,12 @@ def read_transfers(spark: SparkSession, raw: str, size: str):
     path = f"{raw}/transactions/variant=HI/size={size}/HI-{size.capitalize()}_Trans.csv"
     log.info("Reading %s", path)
     return spark.read.csv(path, schema=RAW_SCHEMA, header=True)
+
+
+def read_patterns(spark: SparkSession, raw: str, size: str):
+    path = f"{raw}/patterns/variant=HI/size={size}/HI-{size.capitalize()}_Patterns.txt"
+    log.info("Reading %s", path)
+    return spark.read.text(path)
 
 
 def with_source(df):
@@ -160,8 +177,7 @@ def legs(transfers):
     The currency and amount are the ones that account dealt in: what it paid, or what it
     received. The two differ on a cross-currency transfer.
     """
-    moved = transfers.where("NOT (sender_bank_id = receiver_bank_id "
-                            "AND sender_account_number = receiver_account_number)")
+    moved = transfers.where(f"NOT ({SELF_TRANSFER})")
     both_sides = [F.col("timestamp"), F.to_date("timestamp").alias("date"),
                   F.col("payment_format"),
                   (F.col("sender_bank_id") != F.col("receiver_bank_id")).alias("cross_bank")]
@@ -266,6 +282,56 @@ def build_features(transfers, rates: dict[str, float]):
         .select(*FEATURE_KEYS, *FEATURES))
 
 
+# --- Labels and rings ---------------------------------------------------------
+# Both are the label side of the curated zone: Training joins them deliberately, and the
+# features table never carries them (ADR 0002).
+
+
+def build_labels(features, accepted):
+    """`laundered_24h` for every account-day the features hold, and for no other.
+
+    1 when the account sent or received a transfer marked as laundering that day. The
+    account-days are taken from the features themselves, so the two tables share a grain
+    exactly and an account-day with no laundering transfer is a 0, not a missing row.
+    A self-transfer marked as laundering counts, since the account did take part in it,
+    but can never add an account-day: an account-day needs a transfer to someone else.
+    """
+    marked = accepted.where("laundering_mark = 1")
+
+    def party(side):
+        return marked.select(F.col(f"{side}_bank_id").alias("bank_id"),
+                             F.col(f"{side}_account_number").alias("account_number"), "date")
+
+    took_part = party("sender").unionByName(party("receiver")).distinct()
+    return (features.select(*FEATURE_KEYS)
+            .join(took_part.withColumn(LABEL, F.lit(1)), FEATURE_KEYS, "left")
+            .fillna({LABEL: 0}))
+
+
+def build_rings(lines):
+    """One row per transfer the patterns file lists, with its ring's id and shape.
+
+    The file names no ring, so a ring's id is its block's position in the file: the running
+    count of BEGIN lines. Everything that is not a transfer row -- the BEGIN and END lines
+    themselves -- is dropped.
+    """
+    # shortcut: one global order puts the whole patterns file through a single task; number
+    # the blocks per partition if that file ever outgrows one executor.
+    in_file_order = Window.orderBy("_order")
+    shape = F.regexp_extract("value", RING_BEGIN, 1)
+    numbered = (lines.withColumn("_order", F.monotonically_increasing_id())
+                .withColumn("_shape", F.when(shape != "", shape)))
+    fields = F.split("value", ",")
+    # shortcut: a transfer row sitting between two blocks would be read as part of the
+    # first; the patterns file has none, so the END lines are dropped rather than tracked.
+    return clean(numbered
+                 .withColumn("ring_id", F.count("_shape").over(in_file_order))
+                 .withColumn("pattern_type", F.last("_shape", True).over(in_file_order))
+                 .where(F.col("_shape").isNull() & F.col("value").rlike(TRANSFER_LINE))
+                 .select("ring_id", "pattern_type",
+                         *(fields[i].alias(c) for i, c in enumerate(RAW_COLUMNS))))
+
+
 def write_report(spark: SparkSession, out: str, report: dict) -> None:
     write_text(spark, f"{out}/quality/{report['run_id']}.json", json.dumps(report, indent=2))
     log.info("Quality report: %s", report)
@@ -291,7 +357,8 @@ def main(argv: list[str] | None = None) -> None:
     spark.conf.set("spark.sql.session.timeZone", "UTC")
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    raw_rows = with_source(read_transfers(spark, args.input.rstrip("/"), args.size))
+    raw = args.input.rstrip("/")
+    raw_rows = with_source(read_transfers(spark, raw, args.size))
     checked = raw_rows.withColumn("quarantine_reason", quarantine_reason()).cache()
 
     # Write the rejected rows before the gate below can fail the job, so they survive it.
@@ -320,21 +387,30 @@ def main(argv: list[str] | None = None) -> None:
                            f"the {args.quarantine_threshold:.2%} threshold; quality report and "
                            f"quarantined rows written for run {run_id}")
 
+    accepted = clean(checked.where("quarantine_reason IS NULL"))
     # The feature builder is never handed the laundering mark (ADR 0002).
-    transfers = (clean(checked.where("quarantine_reason IS NULL"))
-                 .select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date"))
+    transfers = accepted.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date")
     # Derived before anything is written, so a currency without a USD rate stops the job
     # rather than leaving half a build behind.
     rates = usd_rates(transfers)
     report["usd_rates"] = rates
 
+    self_transfers = accepted.where(SELF_TRANSFER)
+    report["self_transfers"] = self_transfers.count()
+    report["self_transfers_laundering"] = self_transfers.where("laundering_mark = 1").count()
+
     # Leading with date matches the writer's own required sort, so it keeps the bank order.
     (transfers.repartition("date").sortWithinPartitions("date", "sender_bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfers"))
 
-    (build_features(transfers, rates)
-     .repartition("date").sortWithinPartitions("date", "bank_id")
+    features = build_features(transfers, rates).cache()
+    (features.repartition("date").sortWithinPartitions("date", "bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/features"))
+
+    (build_labels(features, accepted)
+     .write.mode("overwrite").partitionBy("date").parquet(f"{out}/labels"))
+    (build_rings(read_patterns(spark, raw, args.size))
+     .write.mode("overwrite").parquet(f"{out}/rings"))
 
     write_report(spark, out, report)
     write_text(spark, marker, "")
