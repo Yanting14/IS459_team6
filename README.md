@@ -111,17 +111,32 @@ application, at its 32 vCPU and 128 GB cap:
 ```text
 31,898,238 rows in, 0 quarantined       the 1% gate never came near failing
 122,394 banks                           day-only partitioning (ADR-0001) is the right call
-1 to 28 Sep 2022                        not the 1 to 16 the feature window assumes
+1 to 28 Sep 2022                        but 99.98% of rows fall in the first 16 days
 2,561,860 self-transfers (8.03%)        72 of them marked as laundering
 15 currencies, every one priced in USD
 24m41s of job time, 26m31s end to end
 11.019 vCPU-hours, 44.076 GB-hours      US$0.83
 ```
 
-The transfers cover 28 days, but `FIRST_DAY` and `LAST_DAY` stop the features at 16 Sep,
-so the last 12 days reach the curated zone as clean transfers with no features and no
-labels. Raised on #2 rather than changed here: which days the model trains on is the
-spec's to decide, not the job's.
+The transfers run to 28 Sep while the features stop at 16, and the row counts show why
+the spec chose 16. The dataset is generated over Thu 1 to Fri 16 Sep with a weekly
+rhythm -- around 1.93M rows on a weekday, 830K at a weekend, 2.6 to 3.0M on a Friday --
+and then stops. What follows is a decaying tail of stragglers:
+
+```text
+16 Sep  3,021,866     Friday, the last full day
+17 Sep      2,020     Saturday
+18 Sep      1,591
+...
+28 Sep          7
+```
+
+All twelve tail days together hold 6,987 rows, 0.022% of the file, so the window loses
+no meaningful volume. It does lose signal out of proportion to its size: 58.5% of those
+rows carry the laundering mark against 0.098% in the main period, which is 4,084 of the
+dataset's 35,230 laundering transfers, or 11.6%. Those account-days would have nearly
+empty 7-day lookback windows, so they are poor training rows, but the trade is a real
+one and is recorded on #2 rather than decided here.
 
 `--input` and `--output` take S3 URIs or local folders, which is how the same script
 runs on EMR Serverless and under the local tests:
