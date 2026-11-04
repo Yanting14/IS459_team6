@@ -54,15 +54,18 @@ s3://is459-team6-raw-<account>/ibm-aml/v1/
 
 ## Prepare job
 
-`prepare/prepare.py` reads the raw transfer file for one dataset size, sets aside the
-rows whose data is broken, and writes clean transfers to the curated zone, then a
-quality report, then `_SUCCESS`:
+`prepare/prepare.py` reads the raw transfer and patterns files for one dataset size, sets
+aside the rows whose data is broken, and writes clean transfers, account-day features,
+labels and rings to the curated zone, then a quality report, then `_SUCCESS`:
 
 ```
 <curated>/<version-prefix>/
   transfers/date=YYYY-MM-DD/*.parquet    sorted by sender_bank_id
+  features/date=YYYY-MM-DD/*.parquet     one row per account-day, sorted by bank_id
+  labels/date=YYYY-MM-DD/*.parquet       laundered_24h, at the features' account-day grain
+  rings/*.parquet                        one row per transfer listed in the patterns file
   quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
-  quality/<run_id>.json                  rows_in, rows_accepted, rows_quarantined by reason
+  quality/<run_id>.json                  row counts and reasons, USD rates, self-transfers
   _SUCCESS
 ```
 
@@ -71,6 +74,26 @@ an amount is not a positive number, or the currency or payment format is not in 
 dataset's known set. Being a self-transfer is not a reason on its own. If the
 quarantined share exceeds `--quarantine-threshold` (default `0.01`), the job writes the
 quality report and then fails, so the evidence survives the failure.
+
+`build_features` turns clean transfers into one row per account-day: the account made
+or received at least one non-self transfer that day, within 1 to 16 Sep, with every
+feature measured over the 7 days ending on that day. It is a pure function and the
+contract with the Analyse step (ADR-0002), which calls it on transfers filtered to one
+bank to get that bank's view of the same features, so it must depend on nothing but the
+transfers it is given -- `history_days` therefore counts window days from 1 Sep rather
+than from the first day present in the data. A missing feature value stays null; filling
+it in belongs to Training's preprocessing.
+
+Labels and rings are the label side of the curated zone (ADR-0002): Training joins them
+deliberately, and the features table never carries them. `laundered_24h` is 1 when the
+account sent or received a transfer marked as laundering that day, at exactly the account
+features' grain -- the account-days come from the features themselves, so a day with no
+laundering transfer is a 0 rather than a missing row, and a laundering self-transfer can
+never add an account-day of its own. Rings parse the patterns file, whose blocks of
+transfer rows sit between `BEGIN` and `END LAUNDERING ATTEMPT` lines naming each ring's
+shape. A ring's id is its block's position in the file, since the file names none, and the
+pattern type is the shape without the size parameter the file appends to most of them
+(`CYCLE`, not `CYCLE:  Max 10 hops`).
 
 Quarantine is partitioned by run, not by date as ADR-0001 asks of the curated tables:
 it is audit output rather than something to read a day at a time, and a row with an
@@ -92,6 +115,15 @@ They need Python 3.11 and a JDK (17 or 21, with `javac` on the PATH):
 ```bash
 pip install -r prepare/requirements-dev.txt
 python -m pytest prepare
+```
+
+Spark 3.5 does not start at all on JDK 27, which took away both `Subject.getSubject` and
+the `-Djava.security.manager=allow` option it falls back on. Where the machine's JDK is
+too new, run the suite in a container holding JDK 17 instead:
+
+```bash
+docker build -f prepare/Dockerfile.test -t is459-tests prepare
+docker run --rm -v "$PWD:/repo" -w /repo/prepare is459-tests python -m pytest -q
 ```
 
 On Windows no winutils or `HADOOP_HOME` is needed: `prepare/conftest.py` compiles

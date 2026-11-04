@@ -1,0 +1,23 @@
+# Local test runner for the Prepare job, for machines whose JDK is too new for Spark.
+#
+# Spark 3.5 wants a JDK of 17 or 21. It does not start at all on JDK 27: Hadoop's
+# UserGroupInformation calls Subject.getSubject, which now throws, and the
+# -Djava.security.manager=allow escape hatch has been removed as well.
+#
+# A JRE is enough: conftest.py compiles its local-filesystem shim with javac only on
+# Windows, and this image is Linux.
+#
+#   docker build -f prepare/Dockerfile.test -t is459-tests prepare
+#   docker run --rm -v "$PWD:/repo" -w /repo/prepare is459-tests python -m pytest -q
+# Pinned to bookworm: trixie has no openjdk-17 package, only 21 and 25.
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends openjdk-17-jre-headless \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
+
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /repo

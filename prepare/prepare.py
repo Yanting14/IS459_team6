@@ -40,6 +40,19 @@ KNOWN_CURRENCIES = ["Australian Dollar", "Bitcoin", "Brazil Real", "Canadian Dol
                     "Mexican Peso", "Ruble", "Rupee", "Saudi Riyal", "Shekel", "Swiss Franc",
                     "UK Pound", "US Dollar", "Yen", "Yuan"]
 KNOWN_PAYMENT_FORMATS = ["ACH", "Bitcoin", "Cash", "Cheque", "Credit Card", "Reinvestment", "Wire"]
+USD = "US Dollar"
+# A transfer between one account and itself: it moves no money between parties, so no
+# feature counts it, but it is still part of that account's timeline.
+SELF_TRANSFER = ("sender_bank_id = receiver_bank_id "
+                 "AND sender_account_number = receiver_account_number")
+
+# Each ring in the patterns file is a block of transfer rows wrapped in a BEGIN and an END
+# line, both naming the ring's shape. The real HI-Medium file names it either on its own
+# ("STACK") or followed by that ring's size parameter ("CYCLE:  Max 10 hops"), so the shape
+# is what precedes the colon: the eight pattern types, not seventy-odd variants of them.
+RING_BEGIN = r"^BEGIN LAUNDERING ATTEMPT\s*-\s*([^:]*[^:\s])"
+TRANSFER_LINE = r"^\d{4}/\d{2}/\d{2} "
+LABEL = "laundered_24h"
 
 
 def fs_and_path(spark: SparkSession, path: str):
@@ -63,6 +76,12 @@ def read_transfers(spark: SparkSession, raw: str, size: str):
     path = f"{raw}/transactions/variant=HI/size={size}/HI-{size.capitalize()}_Trans.csv"
     log.info("Reading %s", path)
     return spark.read.csv(path, schema=RAW_SCHEMA, header=True)
+
+
+def read_patterns(spark: SparkSession, raw: str, size: str):
+    path = f"{raw}/patterns/variant=HI/size={size}/HI-{size.capitalize()}_Patterns.txt"
+    log.info("Reading %s", path)
+    return spark.read.text(path)
 
 
 def with_source(df):
@@ -105,6 +124,215 @@ def clean(df):
             .withColumn("date", F.to_date("timestamp")))
 
 
+def usd_rates(transfers) -> dict[str, float]:
+    """Units of each currency per US dollar, derived from the dataset itself.
+
+    A currency's rate is the median of amount received over amount paid across transfers
+    paid in USD and received in that currency, so an amount in that currency becomes USD
+    by dividing by its rate. USD is 1. Rates are never chained through a third currency:
+    a currency the data uses but never pays for in USD fails the job by name, because a
+    silently wrong USD amount is worse than no run at all.
+    """
+    paid_in_usd = transfers.where(F.col("payment_currency") == USD)
+    rates = {row["receiving_currency"]: row["rate"] for row in
+             paid_in_usd.groupBy("receiving_currency")
+             .agg(F.expr("percentile(amount_received / amount_paid, 0.5)").alias("rate"))
+             .collect()}
+    rates[USD] = 1.0
+
+    in_use = {row[0] for row in transfers.select("payment_currency")
+              .union(transfers.select("receiving_currency")).distinct().collect()}
+    missing = sorted(in_use - rates.keys())
+    if missing:
+        raise RuntimeError(f"No transfer paid in {USD} and received in "
+                           f"{', '.join(missing)}, so no USD rate can be derived for it; "
+                           f"rates are never chained through another currency")
+    return {currency: rates[currency] for currency in sorted(in_use)}
+
+
+# --- Features -----------------------------------------------------------------
+
+# The days the dataset covers. Features are built for these days only, and `history_days`
+# counts window days from the first of them, so a bank view agrees with the shared view on
+# it (ADR 0002). Not yet checked against the real HI-Medium file -- confirm before the
+# first full run (#10).
+FIRST_DAY = "2022-09-01"
+LAST_DAY = "2022-09-16"
+WINDOW_DAYS = 7
+
+ACCOUNT = ["bank_id", "account_number"]  # the glossary's account: never the number alone
+FEATURE_KEYS = [*ACCOUNT, "date"]
+# The only two features computed from a counterparty's own transfers rather than the
+# account's, so the only two a bank view may change (ADR 0002).
+COUNTERPARTY_FEATURES = ["cp_max_fan_in", "cp_max_fan_out"]
+FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", *COUNTERPARTY_FEATURES,
+            "usd_in", "usd_out", "max_usd", "pass_through", "hrs_in_to_out",
+            "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
+            "history_days"]
+
+
+def legs(transfers):
+    """One row per account per transfer: outgoing for its sender, incoming for its receiver.
+
+    A self-transfer moves no money between parties, so it is excluded from every feature.
+    The currency and amount are the ones that account dealt in: what it paid, or what it
+    received. The two differ on a cross-currency transfer.
+    """
+    moved = transfers.where(f"NOT ({SELF_TRANSFER})")
+    both_sides = [F.col("timestamp"), F.to_date("timestamp").alias("date"),
+                  F.col("payment_format"),
+                  (F.col("sender_bank_id") != F.col("receiver_bank_id")).alias("cross_bank")]
+    outgoing = moved.select(
+        F.col("sender_bank_id").alias("bank_id"),
+        F.col("sender_account_number").alias("account_number"),
+        F.col("receiver_bank_id").alias("cp_bank_id"),
+        F.col("receiver_account_number").alias("cp_account_number"),
+        F.lit(True).alias("outgoing"), F.col("payment_currency").alias("currency"),
+        F.col("amount_paid").alias("amount"), *both_sides)
+    incoming = moved.select(
+        F.col("receiver_bank_id").alias("bank_id"),
+        F.col("receiver_account_number").alias("account_number"),
+        F.col("sender_bank_id").alias("cp_bank_id"),
+        F.col("sender_account_number").alias("cp_account_number"),
+        F.lit(False).alias("outgoing"), F.col("receiving_currency").alias("currency"),
+        F.col("amount_received").alias("amount"), *both_sides)
+    return outgoing.unionByName(incoming)
+
+
+def counterparty_features(windows, window_legs):
+    """The highest `fan_in` among the accounts an account pays, and the highest `fan_out`
+    among the accounts paying it, read off those counterparties' own rows for the same
+    window and day.
+
+    Every transfer gives both of its accounts a leg over the same account-days, so a
+    counterparty always has a row of its own to read -- even on a day it was itself idle,
+    which is why `windows` is joined before the idle days are dropped. An account with no
+    counterparty on one side keeps a null there.
+    """
+    counterparties = windows.select("account_day", "fan_in", "fan_out",
+                                    *(F.col(c).alias(f"cp_{c}") for c in ACCOUNT))
+    return (window_legs.join(counterparties, ["account_day", *(f"cp_{c}" for c in ACCOUNT)])
+            .groupBy(*ACCOUNT, "account_day")
+            .agg(F.max(F.when(F.col("outgoing"), F.col("fan_in"))).alias("cp_max_fan_in"),
+                 F.max(F.when(~F.col("outgoing"), F.col("fan_out"))).alias("cp_max_fan_out")))
+
+
+def build_features(transfers, rates: dict[str, float]):
+    """Account-day features over each day's 7-day lookback window.
+
+    A pure function: no I/O, no label, and nothing but the transfers it is given, the rates
+    from `usd_rates` and the dataset's fixed day range. Analyse calls it with transfers
+    filtered to one bank's view to get that bank's features from the same code (ADR 0002),
+    so the two views may differ only in `COUNTERPARTY_FEATURES`: every other feature must
+    depend on the account's own transfers alone, all of which any view of its bank holds.
+    A bank view is therefore given the rates derived from the whole dataset.
+    """
+    # A day's own transfer count is the same in every window that contains that day.
+    day_legs = (legs(transfers).withColumn("transfers_that_day", F.count(F.lit(1)).over(
+        Window.partitionBy(*ACCOUNT, "date")))
+        .withColumn("usd", F.col("amount") / F.create_map(
+            [F.lit(v) for pair in sorted(rates.items()) for v in pair])[F.col("currency")]))
+
+    # A transfer falls in the windows of the 7 days from its own day onwards.
+    window_legs = (day_legs
+                   .withColumn("account_day", F.explode(F.sequence(
+                       F.col("date"), F.date_add("date", WINDOW_DAYS - 1))))
+                   .where(F.col("account_day").between(F.to_date(F.lit(FIRST_DAY)),
+                                                       F.to_date(F.lit(LAST_DAY)))))
+
+    # Hours since the latest incoming transfer strictly before each outgoing one. Timestamps
+    # are whole minutes, so a bound one second back is exactly "earlier".
+    earlier_in_window = (Window.partitionBy(*ACCOUNT, "account_day")
+                         .orderBy(F.col("timestamp").cast("long"))
+                         .rangeBetween(Window.unboundedPreceding, -1))
+    last_incoming = F.max(F.when(~F.col("outgoing"),
+                                 F.col("timestamp").cast("long"))).over(earlier_in_window)
+    window_legs = window_legs.withColumn("hrs_since_in", F.when(
+        F.col("outgoing"), (F.col("timestamp").cast("long") - last_incoming) / 3600))
+
+    counterparty = F.array("cp_bank_id", "cp_account_number")  # never the number alone
+    windows = (window_legs.groupBy(*ACCOUNT, "account_day").agg(
+        F.count_distinct(F.when(~F.col("outgoing"), counterparty)).alias("fan_in"),
+        F.count_distinct(F.when(F.col("outgoing"), counterparty)).alias("fan_out"),
+        F.count_distinct("cp_bank_id").alias("cp_banks"),
+        F.avg(F.col("cross_bank").cast("int")).alias("cross_bank_share"),
+        # No money came in is 0 in, not an unknown; but the largest of no transfers at all
+        # is genuinely missing, so `max_usd` stays null for an account that only received.
+        F.coalesce(F.sum(F.when(~F.col("outgoing"), F.col("usd"))), F.lit(0.0)).alias("usd_in"),
+        F.coalesce(F.sum(F.when(F.col("outgoing"), F.col("usd"))), F.lit(0.0)).alias("usd_out"),
+        F.max(F.when(F.col("outgoing"), F.col("usd"))).alias("max_usd"),
+        F.expr("percentile(hrs_since_in, 0.5)").alias("hrs_in_to_out"),
+        F.max("transfers_that_day").alias("max_txn_per_day"),
+        F.count_distinct("date").alias("active_days"),
+        F.count_distinct("payment_format").alias("n_pay_formats"),
+        F.avg((F.col("payment_format") == "ACH").cast("int")).alias("ach_share"),
+        F.count_distinct("currency").alias("n_currencies"),
+        # An account-day exists only where the account itself moved money that day.
+        F.max((F.col("date") == F.col("account_day")).cast("int")).alias("active_on_the_day")))
+
+    return (windows.where("active_on_the_day = 1")
+        .join(counterparty_features(windows, window_legs), [*ACCOUNT, "account_day"], "left")
+        .withColumnRenamed("account_day", "date")
+        # A window day before the dataset's first day is not short history: it does not exist.
+        .withColumn("history_days", F.least(
+            F.lit(WINDOW_DAYS), F.datediff("date", F.to_date(F.lit(FIRST_DAY))) + 1))
+        # Money that came in and left again in equal measure, where 1 is a pure conduit.
+        # Nothing moved either way is not a conduit, and the ratio would be 0/0.
+        .withColumn("pass_through", F.when(F.greatest("usd_in", "usd_out") == 0, F.lit(0.0))
+                    .otherwise(F.least("usd_in", "usd_out") / F.greatest("usd_in", "usd_out")))
+        .select(*FEATURE_KEYS, *FEATURES))
+
+
+# --- Labels and rings ---------------------------------------------------------
+# Both are the label side of the curated zone: Training joins them deliberately, and the
+# features table never carries them (ADR 0002).
+
+
+def build_labels(features, accepted):
+    """`laundered_24h` for every account-day the features hold, and for no other.
+
+    1 when the account sent or received a transfer marked as laundering that day. The
+    account-days are taken from the features themselves, so the two tables share a grain
+    exactly and an account-day with no laundering transfer is a 0, not a missing row.
+    A self-transfer marked as laundering counts, since the account did take part in it,
+    but can never add an account-day: an account-day needs a transfer to someone else.
+    """
+    marked = accepted.where("laundering_mark = 1")
+
+    def party(side):
+        return marked.select(F.col(f"{side}_bank_id").alias("bank_id"),
+                             F.col(f"{side}_account_number").alias("account_number"), "date")
+
+    took_part = party("sender").unionByName(party("receiver")).distinct()
+    return (features.select(*FEATURE_KEYS)
+            .join(took_part.withColumn(LABEL, F.lit(1)), FEATURE_KEYS, "left")
+            .fillna({LABEL: 0}))
+
+
+def build_rings(lines):
+    """One row per transfer the patterns file lists, with its ring's id and shape.
+
+    The file names no ring, so a ring's id is its block's position in the file: the running
+    count of BEGIN lines. Everything that is not a transfer row -- the BEGIN and END lines
+    themselves -- is dropped.
+    """
+    # shortcut: one global order puts the whole patterns file through a single task; number
+    # the blocks per partition if that file ever outgrows one executor.
+    in_file_order = Window.orderBy("_order")
+    shape = F.regexp_extract("value", RING_BEGIN, 1)
+    numbered = (lines.withColumn("_order", F.monotonically_increasing_id())
+                .withColumn("_shape", F.when(shape != "", shape)))
+    fields = F.split("value", ",")
+    # shortcut: a transfer row sitting between two blocks would be read as part of the
+    # first; the patterns file has none, so the END lines are dropped rather than tracked.
+    return clean(numbered
+                 .withColumn("ring_id", F.count("_shape").over(in_file_order))
+                 .withColumn("pattern_type", F.last("_shape", True).over(in_file_order))
+                 .where(F.col("_shape").isNull() & F.col("value").rlike(TRANSFER_LINE))
+                 .select("ring_id", "pattern_type",
+                         *(fields[i].alias(c) for i, c in enumerate(RAW_COLUMNS))))
+
+
 def write_report(spark: SparkSession, out: str, report: dict) -> None:
     write_text(spark, f"{out}/quality/{report['run_id']}.json", json.dumps(report, indent=2))
     log.info("Quality report: %s", report)
@@ -130,7 +358,8 @@ def main(argv: list[str] | None = None) -> None:
     spark.conf.set("spark.sql.session.timeZone", "UTC")
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    raw_rows = with_source(read_transfers(spark, args.input.rstrip("/"), args.size))
+    raw = args.input.rstrip("/")
+    raw_rows = with_source(read_transfers(spark, raw, args.size))
     checked = raw_rows.withColumn("quarantine_reason", quarantine_reason()).cache()
 
     # Write the rejected rows before the gate below can fail the job, so they survive it.
@@ -159,11 +388,30 @@ def main(argv: list[str] | None = None) -> None:
                            f"the {args.quarantine_threshold:.2%} threshold; quality report and "
                            f"quarantined rows written for run {run_id}")
 
-    transfers = clean(checked.where("quarantine_reason IS NULL"))
+    accepted = clean(checked.where("quarantine_reason IS NULL"))
+    # The feature builder is never handed the laundering mark (ADR 0002).
+    transfers = accepted.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date")
+    # Derived before anything is written, so a currency without a USD rate stops the job
+    # rather than leaving half a build behind.
+    rates = usd_rates(transfers)
+    report["usd_rates"] = rates
+
+    self_transfers = accepted.where(SELF_TRANSFER)
+    report["self_transfers"] = self_transfers.count()
+    report["self_transfers_laundering"] = self_transfers.where("laundering_mark = 1").count()
+
     # Leading with date matches the writer's own required sort, so it keeps the bank order.
-    (transfers.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date")
-     .repartition("date").sortWithinPartitions("date", "sender_bank_id")
+    (transfers.repartition("date").sortWithinPartitions("date", "sender_bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfers"))
+
+    features = build_features(transfers, rates).cache()
+    (features.repartition("date").sortWithinPartitions("date", "bank_id")
+     .write.mode("overwrite").partitionBy("date").parquet(f"{out}/features"))
+
+    (build_labels(features, accepted)
+     .write.mode("overwrite").partitionBy("date").parquet(f"{out}/labels"))
+    (build_rings(read_patterns(spark, raw, args.size))
+     .write.mode("overwrite").parquet(f"{out}/rings"))
 
     write_report(spark, out, report)
     write_text(spark, marker, "")
