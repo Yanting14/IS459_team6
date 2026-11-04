@@ -65,7 +65,8 @@ labels and rings to the curated zone, then a quality report, then `_SUCCESS`:
   labels/date=YYYY-MM-DD/*.parquet       laundered_24h, at the features' account-day grain
   rings/*.parquet                        one row per transfer listed in the patterns file
   quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
-  quality/<run_id>.json                  row counts and reasons, USD rates, self-transfers
+  quality/<run_id>.json                  row counts and reasons, USD rates, self-transfers,
+                                         and the days and banks the run saw
   _SUCCESS
 ```
 
@@ -101,6 +102,26 @@ unparseable timestamp has no date to partition on.
 
 If `_SUCCESS` already exists under the version prefix, the job does nothing, so
 bumping `curated_prefix` is what forces a fresh build.
+
+### The HI-Medium run
+
+The first real run, 4 Nov 2026, through the pipeline on the shared EMR Serverless
+application, at its 32 vCPU and 128 GB cap:
+
+```text
+31,898,238 rows in, 0 quarantined       the 1% gate never came near failing
+122,394 banks                           day-only partitioning (ADR-0001) is the right call
+1 to 28 Sep 2022                        not the 1 to 16 the feature window assumes
+2,561,860 self-transfers (8.03%)        72 of them marked as laundering
+15 currencies, every one priced in USD
+24m41s of job time, 26m31s end to end
+11.019 vCPU-hours, 44.076 GB-hours      US$0.83
+```
+
+The transfers cover 28 days, but `FIRST_DAY` and `LAST_DAY` stop the features at 16 Sep,
+so the last 12 days reach the curated zone as clean transfers with no features and no
+labels. Raised on #2 rather than changed here: which days the model trains on is the
+spec's to decide, not the job's.
 
 `--input` and `--output` take S3 URIs or local folders, which is how the same script
 runs on EMR Serverless and under the local tests:
