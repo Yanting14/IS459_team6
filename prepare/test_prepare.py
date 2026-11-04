@@ -463,6 +463,16 @@ def test_rings_carry_a_ring_id_a_pattern_type_and_the_transfers_own_fields(spark
     assert not list((curated / PREFIX / "rings").glob("*=*"))  # not partitioned
 
 
+def test_quality_report_records_the_days_and_banks_seen(raw, curated, spark):
+    run_job(raw, curated)
+
+    report = only_report(curated)
+    # The range is what the accepted transfers hold, not the feature window: MEDIUM_ROWS
+    # reaches a day past either end of it.
+    assert (report["first_day"], report["last_day"]) == ("2022-08-31", "2022-09-17")
+    assert report["banks"] == 4  # 010, 3208, 1 and 7, each counted once
+
+
 def test_quality_report_counts_self_transfers_and_the_laundering_ones(raw, curated, spark):
     run_job(raw, curated)
 

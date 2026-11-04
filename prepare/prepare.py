@@ -400,6 +400,14 @@ def main(argv: list[str] | None = None) -> None:
     report["self_transfers"] = self_transfers.count()
     report["self_transfers_laundering"] = self_transfers.where("laundering_mark = 1").count()
 
+    # The days and banks the run actually saw, rather than the ones FIRST_DAY, LAST_DAY and
+    # ADR-0001 assume. Reported here because the curated tables are not in the Glue catalog,
+    # so reading these back afterwards would cost another job.
+    seen = accepted.agg(F.min("date"), F.max("date")).first()
+    report["first_day"], report["last_day"] = str(seen[0]), str(seen[1])
+    report["banks"] = (accepted.select("sender_bank_id")
+                       .union(accepted.select("receiver_bank_id")).distinct().count())
+
     # Leading with date matches the writer's own required sort, so it keeps the bank order.
     (transfers.repartition("date").sortWithinPartitions("date", "sender_bank_id")
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfers"))
