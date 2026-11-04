@@ -118,6 +118,10 @@ application, at its 32 vCPU and 128 GB cap:
 11.019 vCPU-hours, 44.076 GB-hours      US$0.83
 ```
 
+A second execution over the same version prefix finds `_SUCCESS` and returns before
+reading anything: 52 seconds of job time, US$0.02, and not one object in the curated
+zone rewritten. That is what makes a daily schedule affordable on a static dataset.
+
 The transfers run to 28 Sep while the features stop at 16, and the row counts show why
 the spec chose 16. The dataset is generated over Thu 1 to Fri 16 Sep with a weekly
 rhythm -- around 1.93M rows on a weekday, 830K at a weekend, 2.6 to 3.0M on a Friday --
