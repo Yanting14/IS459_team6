@@ -1,0 +1,3 @@
+# Frozen source hashes include line endings and upstream whitespace.
+# Preserve the supplied bytes and exclude these copies from whitespace linting.
+scoring/vendor/* -text -whitespace

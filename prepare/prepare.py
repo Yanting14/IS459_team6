@@ -8,7 +8,7 @@ Arguments:
   --input                  raw zone root, e.g. s3://<raw>/ibm-aml/v1
   --output                 curated zone root, e.g. s3://<curated>
   --size                   dataset size to read (default medium)
-  --version-prefix         key prefix for this build under --output (default ibm-aml/v1)
+  --version-prefix         key prefix for this build under --output (default ibm-aml/v2)
   --quarantine-threshold   share of input rows that may be quarantined before the job
                            fails, as a fraction (default 0.01, i.e. 1%)
 """
@@ -16,6 +16,7 @@ Arguments:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 from datetime import datetime, timezone
@@ -73,25 +74,40 @@ def write_text(spark: SparkSession, path: str, text: str) -> None:
 
 
 def read_transfers(spark: SparkSession, raw: str, size: str):
+    raw = raw.replace("\\", "/")
     path = f"{raw}/transactions/variant=HI/size={size}/HI-{size.capitalize()}_Trans.csv"
     log.info("Reading %s", path)
-    return spark.read.csv(path, schema=RAW_SCHEMA, header=True)
+    # Read physical byte offsets, not Spark-generated row IDs. IBM CSV records are
+    # single-line; ordering offsets before numbering is invariant to input splits.
+    fs, source = fs_and_path(spark, path)
+    stream = fs.open(source)
+    try:
+        digest = spark._jvm.org.apache.commons.codec.digest.DigestUtils.sha256Hex(stream)
+    finally:
+        stream.close()
+    lines = spark.sparkContext.newAPIHadoopFile(
+        path, "org.apache.hadoop.mapreduce.lib.input.TextInputFormat",
+        "org.apache.hadoop.io.LongWritable", "org.apache.hadoop.io.Text")
+    records = lines.filter(lambda item: item[0] != 0).sortByKey().values().zipWithIndex()
+
+    def parse(item):
+        line, index = item
+        fields = next(csv.reader([line]))
+        if len(fields) != len(RAW_COLUMNS):
+            raise ValueError(f"Expected {len(RAW_COLUMNS)} fields at source row {index}")
+        return (*fields, index)
+
+    return (spark.createDataFrame(records.map(parse), RAW_SCHEMA + ", source_row_id LONG")
+            .withColumn("source_file", F.lit(path))
+            .withColumn("source_sha256", F.lit(digest))
+            .withColumn("row_number", F.col("source_row_id") + 1)
+            .withColumn("transfer_id", F.concat(F.lit(digest + ":"), F.col("source_row_id"))))
 
 
 def read_patterns(spark: SparkSession, raw: str, size: str):
     path = f"{raw}/patterns/variant=HI/size={size}/HI-{size.capitalize()}_Patterns.txt"
     log.info("Reading %s", path)
     return spark.read.text(path)
-
-
-def with_source(df):
-    """Tag each row with where it came from: its file and its position after the header."""
-    numbered = (df.withColumn("source_file", F.input_file_name())
-                .withColumn("_read_order", F.monotonically_increasing_id()))
-    # shortcut: numbering sorts a whole source file in one task; switch to per-partition
-    # offsets if one file ever outgrows a single executor.
-    window = Window.partitionBy("source_file").orderBy("_read_order")
-    return numbered.withColumn("row_number", F.row_number().over(window)).drop("_read_order")
 
 
 def quarantine_reason():
@@ -358,7 +374,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", required=True)
     # Rejected here rather than after a 3 GB read, and the table is the list of sizes.
     parser.add_argument("--size", default="medium", choices=sorted(PRIMARY_PERIOD))
-    parser.add_argument("--version-prefix", default="ibm-aml/v1")
+    parser.add_argument("--version-prefix", default="ibm-aml/v2")
     parser.add_argument("--quarantine-threshold", type=float, default=0.01)
     args = parser.parse_args(argv)
     out = f"{args.output.rstrip('/')}/{args.version_prefix.strip('/')}"
@@ -375,12 +391,13 @@ def main(argv: list[str] | None = None) -> None:
     period = PRIMARY_PERIOD[args.size]
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     raw = args.input.rstrip("/")
-    raw_rows = with_source(read_transfers(spark, raw, args.size))
+    raw_rows = read_transfers(spark, raw, args.size)
     checked = raw_rows.withColumn("quarantine_reason", quarantine_reason()).cache()
 
     # Write the rejected rows before the gate below can fail the job, so they survive it.
     quarantined = checked.where("quarantine_reason IS NOT NULL")
-    (quarantined.select("quarantine_reason", "source_file", "row_number", *RAW_COLUMNS)
+    (quarantined.select("quarantine_reason", "source_file", "row_number",
+                        "source_row_id", "source_sha256", "transfer_id", *RAW_COLUMNS)
      .withColumn("run_id", F.lit(run_id))
      .write.mode("append").partitionBy("run_id").parquet(f"{out}/quarantine"))
 
@@ -389,6 +406,7 @@ def main(argv: list[str] | None = None) -> None:
     rows_in = checked.count()
     rows_quarantined = sum(by_reason.values())
     report = {
+        "schema_version": 2,
         "run_id": run_id,
         "size": args.size,
         "rows_in": rows_in,
@@ -406,7 +424,9 @@ def main(argv: list[str] | None = None) -> None:
 
     accepted = clean(checked.where("quarantine_reason IS NULL"))
     # The feature builder is never handed the laundering mark (ADR 0002).
-    transfers = accepted.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"), "date")
+    identity = ["transfer_id", "source_file", "source_sha256", "source_row_id"]
+    transfers = accepted.select(*(c for c in RAW_COLUMNS if c != "laundering_mark"),
+                                "date", *identity)
     # Derived before anything is written, so a currency without a USD rate stops the job
     # rather than leaving half a build behind.
     rates = usd_rates(transfers)
@@ -437,6 +457,8 @@ def main(argv: list[str] | None = None) -> None:
 
     (build_labels(features, accepted)
      .write.mode("overwrite").partitionBy("date").parquet(f"{out}/labels"))
+    (accepted.select(*identity, "date", "laundering_mark")
+     .write.mode("overwrite").partitionBy("date").parquet(f"{out}/transfer_labels"))
     (build_rings(read_patterns(spark, raw, args.size))
      .write.mode("overwrite").parquet(f"{out}/rings"))
 

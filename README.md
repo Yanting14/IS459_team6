@@ -10,6 +10,7 @@ infra/                 Terraform (S3 raw + curated zones, ingest task, EMR Serve
 ingest/                Fargate container: Kaggle -> S3 raw zone
 prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
+scoring/              Frozen GIN graph preparation, inference, ranking and evaluation
 scripts/               Helper scripts
 ```
 
@@ -23,6 +24,7 @@ EventBridge (daily, off by default) / manual start
      -> no:  Ingest (ECS Fargate)  download from Kaggle, unzip, upload to S3,
                                    write manifest.json, then _SUCCESS
      -> Prepare (EMR Serverless)   raw zone -> curated zone, waits for the job
+     -> Score (optional, Batch)    stage graph/model, score, rank, publish gold
 ```
 
 The dataset is static, so ingestion really runs once. Daily runs skip it. If the
@@ -63,6 +65,7 @@ labels and rings to the curated zone, then a quality report, then `_SUCCESS`:
   transfers/date=YYYY-MM-DD/*.parquet    sorted by sender_bank_id
   features/date=YYYY-MM-DD/*.parquet     one row per account-day, sorted by bank_id
   labels/date=YYYY-MM-DD/*.parquet       laundered_24h, at the features' account-day grain
+  transfer_labels/date=YYYY-MM-DD/*.parquet  individual transfer ground truth, keyed by transfer_id
   rings/*.parquet                        one row per transfer listed in the patterns file
   quarantine/run_id=<run_id>/*.parquet   rejected rows, with reason, source file and row number
   quality/<run_id>.json                  row counts and reasons, USD rates, self-transfers,
@@ -155,7 +158,7 @@ quality report gives the period it used as `primary_period`, beside the `first_d
 runs on EMR Serverless and under the local tests:
 
 ```bash
-spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v1 --quarantine-threshold 0.01
+spark-submit prepare/prepare.py --input s3://<raw>/ibm-aml/v1   --output s3://<curated> --size medium --version-prefix ibm-aml/v2 --quarantine-threshold 0.01
 ```
 
 Tests run the job on a small hand-made raw zone with a local Spark session.
@@ -241,6 +244,84 @@ group `/ecs/is459-team6-ingest`.
 | `dataset_variants` | `["HI"]` | Add `"LI"` for the low-illicit-ratio files |
 | `dataset_sizes` | `["Medium", "Large"]` | |
 | `raw_prefix` | `ibm-aml/v1` | Change to `v2` to force a fresh ingest |
-| `curated_prefix` | `ibm-aml/v1` | Change to `v2` to force a fresh Prepare build |
+| `curated_prefix` | `ibm-aml/v2` | v2 preserves stable transfer IDs and separate transfer labels |
 | `enable_daily_schedule` | `false` | Turn on once the full pipeline exists |
+| `enable_scoring` | `false` | Enable after publishing the model bundle and scoring image |
+| `scoring_image_digest` | empty | Required immutable ECR digest when scoring is enabled |
 | `force_destroy_buckets` | `false` | Set `true` before `terraform destroy` at project end |
+
+## Frozen GIN scoring
+
+`scoring/pipeline.py` integrates the selected enriched IBM GINe without changing its
+weights or fitted transformations. It consumes curated **transfers**, not the existing
+seven-day account-day feature table. Graph inputs contain 35 edge features and 30 node
+features over cumulative history since 1 Sep 2022, including self-transfers. The
+original feature functions and IBM model source are preserved byte-for-byte under
+`scoring/vendor/`; `.gitattributes` protects their provenance hashes across checkouts.
+
+Curated v2 adds `source_file`, `source_sha256`, `source_row_id` (zero-based before
+filtering) and `transfer_id` (`sha256:row`) to every transfer. Preparation orders the
+single-line IBM CSV by physical byte offsets before numbering, so Spark input splits
+cannot change identity. It hashes the actual source bytes. Ground truth is written
+separately to `transfer_labels`, while account-day labels retain their original grain.
+Existing v1 output remains readable but cannot feed the graph adapter.
+
+Install `scoring/requirements.txt` in a separate model environment. GPU replay needs
+the matching CUDA PyTorch build (the original environment used `2.5.1+cu121`). Spark
+tests continue to use Python 3.11 and `prepare/requirements-dev.txt`.
+
+Run these commands from the repository root, substituting your source artifact paths:
+
+```powershell
+python -m scoring.pipeline bundle --source "C:/Users/User/Documents/Big Data/miscellaneous/gin_v2" --base "C:/Users/User/Documents/Big Data/miscellaneous/full_run" --out artifacts/gin-selected
+
+# First validate the frozen inference path on the original historical graph.
+python -m scoring.pipeline replay --base "C:/Users/User/Documents/Big Data/miscellaneous/full_run" --context "C:/Users/User/Documents/Big Data/miscellaneous/gin_v2/test_context" --model artifacts/gin-selected --expected "C:/Users/User/Documents/Big Data/miscellaneous/gin_v2/test_inference/test_scores.npy" --out artifacts/replay --device cuda
+
+# Stage the complete curated v2 prefix locally, including its _SUCCESS marker.
+python -m scoring.pipeline prepare --curated artifacts/curated-v2 --model artifacts/gin-selected --start 2022-09-14 --cutoff 2022-09-15 --out artifacts/day14-context
+python -m scoring.pipeline infer --context artifacts/day14-context --model artifacts/gin-selected --out artifacts/day14-inference --device cuda
+
+# K is explicit: 1,000 here is an example daily budget, not a validated daily policy.
+python -m scoring.pipeline rank --context artifacts/day14-context --inference artifacts/day14-inference --out artifacts/day14-ranking --daily --k 1000
+
+# Optional; scoring and export never read these labels.
+python -m scoring.pipeline evaluate --context artifacts/day14-context --ranking artifacts/day14-ranking --labels artifacts/curated-v2/transfer_labels --out artifacts/day14-evaluation
+```
+
+Daily windows must run midnight to midnight. Only accounts with a non-self transfer
+that day are eligible, but their score includes all incident transfers, including
+self-transfers. Output contains `accounts.csv`, `transfers.parquet` and a manifest.
+Scores are uncalibrated; evidence identifies the highest-scoring observed transfer.
+Fewer than K eligible accounts produce a shorter list. Evaluation reports the actual
+number reviewed. Historical evaluation-window metrics do not establish daily accuracy.
+
+For a bank view, pass `--bank BANK_ID` to `prepare` to filter visibility before features
+and sampling indexes, and to `rank` to restrict the review cohort. For the comparable
+shared run, omit it from `prepare` but retain it in `rank`. Match window, budget and
+eligibility between runs. See ADR-0004.
+
+Each command refuses an existing output directory and writes `_SUCCESS` last. Bundles
+verify model, fitted-feature, node-map and source-code hashes. Keep `artifacts/` out of
+Git. The adapter uses disk-backed DuckDB joins/sorting and batched Parquet reads,
+then builds memory-mapped numeric arrays with the original frozen feature functions.
+Inference uses memory-mapped arrays and batched sampling. `scoring/cloud.py` provides
+S3 staging and publication inside an AWS Batch CPU job, and Terraform wires that job
+after Prepare. `enable_scoring` defaults to false until the image and model bundle are
+published. Keep the daily schedule off while validating a manual execution.
+
+For the complete deployment and ingestion-to-prediction test, follow
+[the scoring runbook](docs/scoring-runbook.md). `scripts/Publish-Image.ps1` publishes
+either container image; `python -m scoring.publish` publishes an immutable model
+bundle; `scripts/Test-Pipeline.ps1` starts an execution and verifies the gold outputs.
+
+Validation on the supplied historical arrays reproduced 5,001,944 scores within
+3.28e-7 maximum absolute error and exactly reproduced top-1,000 account IDs and their
+supporting source rows. This validates checkpoint inference replay, not a full-sized
+curated-to-graph rebuild or daily-forward performance.
+
+The full rebuilt Parquet adapter matched all 35 saved feature columns exactly across
+25,008,009 historical transfers. Local validation reports and benchmark outputs are
+retained under the ignored `artifacts/` directory. See
+[scoring validation](docs/scoring-validation.md) for daily metrics, compute sizing,
+and the status of the cloud acceptance test.

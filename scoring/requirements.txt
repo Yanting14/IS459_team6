@@ -1,0 +1,8 @@
+# Match the selected model's numerical stack. Install the CUDA build of torch
+# separately when using GPU inference; CPU inference is also supported.
+numpy==2.0.1
+pandas==2.2.2
+torch==2.5.1
+torch-geometric==2.8.1
+pyarrow>=18,<27
+duckdb==1.4.3

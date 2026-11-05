@@ -92,7 +92,96 @@ locals {
           MaxAttempts     = 3
           BackoffRate     = 2
         }]
-        End = true
+        # Keep execution-supplied scoring options; EMR's response is not input.
+        ResultPath = null
+        Next       = "ScoringConfiguration"
+      }
+
+      PipelineComplete = { Type = "Succeed" }
+
+      ScoringConfiguration = {
+        Type       = "Pass"
+        Result     = var.enable_scoring
+        ResultPath = "$.scoring_enabled"
+        Next       = "ScoringEnabled"
+      }
+
+      ScoringEnabled = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.scoring_enabled", BooleanEquals = true, Next = "ScoringDefaults" }]
+        Default = "PipelineComplete"
+      }
+
+      ScoringDefaults = {
+        Type = "Pass"
+        Result = {
+          start = var.scoring_start, cutoff = var.scoring_cutoff, k = var.scoring_k, bank = ""
+        }
+        ResultPath = "$.scoring_defaults"
+        Next       = "HasScoringOptions"
+      }
+
+      HasScoringOptions = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.scoring", IsPresent = true, Next = "MergeScoringOptions" }]
+        Default = "DefaultScoringOptions"
+      }
+
+      DefaultScoringOptions = {
+        Type       = "Pass"
+        Parameters = { "options.$" = "$.scoring_defaults" }
+        ResultPath = "$.scoring_request"
+        Next       = "Score"
+      }
+
+      MergeScoringOptions = {
+        Type       = "Pass"
+        Parameters = { "options.$" = "States.JsonMerge($.scoring_defaults, $.scoring, false)" }
+        ResultPath = "$.scoring_request"
+        Next       = "Score"
+      }
+
+      Score = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::batch:submitJob.sync"
+        Parameters = {
+          JobName       = "${var.project}-scoring"
+          JobQueue      = aws_batch_job_queue.scoring.arn
+          JobDefinition = aws_batch_job_definition.scoring.arn
+          ContainerOverrides = {
+            Environment = [
+              { Name = "SCORING_START", "Value.$" = "$.scoring_request.options.start" },
+              { Name = "SCORING_CUTOFF", "Value.$" = "$.scoring_request.options.cutoff" },
+              { Name = "SCORING_K", "Value.$" = "States.Format('{}', $.scoring_request.options.k)" },
+              { Name = "SCORING_BANK", "Value.$" = "$.scoring_request.options.bank" },
+              { Name = "EXECUTION_ID", "Value.$" = "$$.Execution.Name" },
+            ]
+          }
+        }
+        # Covers two host-failure attempts plus queue/provisioning time. The .sync
+        # integration attempts to terminate the Batch job if this task is aborted.
+        TimeoutSeconds = 2 * var.scoring_timeout_seconds + 3600
+        ResultSelector = { "job_id.$" = "$.JobId" }
+        ResultPath     = "$.scoring_job"
+        # Batch owns host retries. Do not retry model/data failures in Step Functions.
+        Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.scoring_error", Next = "ScoringFailed" }]
+        Next  = "ScoringResult"
+      }
+
+      ScoringFailed = {
+        Type  = "Fail"
+        Error = "ScoringFailed"
+        Cause = "Batch scoring failed or timed out. Inspect scoring_error and the Batch CloudWatch logs."
+      }
+
+      ScoringResult = {
+        Type = "Pass"
+        Parameters = {
+          "job_id.$"     = "$.scoring_job.job_id"
+          "result_uri.$" = "States.Format('s3://${aws_s3_bucket.scoring["gold"].id}/${local.scoring_gold_prefix}/executions/{}.json', $$.Execution.Name)"
+        }
+        ResultPath = "$.scoring_result"
+        End        = true
       }
     }
   }
@@ -119,6 +208,17 @@ resource "aws_iam_role_policy" "pipeline" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "batch:SubmitJob"
+        Resource = [aws_batch_job_queue.scoring.arn, aws_batch_job_definition.scoring.arn]
+      },
+      {
+        # Job IDs are allocated at runtime; DescribeJobs has no resource scoping.
+        Effect   = "Allow"
+        Action   = ["batch:DescribeJobs", "batch:TerminateJob"]
+        Resource = "*"
+      },
       {
         Effect   = "Allow"
         Action   = "lambda:InvokeFunction"
@@ -159,6 +259,7 @@ resource "aws_iam_role_policy" "pipeline" {
         Resource = [
           "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForECSTaskRule",
           "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForEMRServerlessJobRule",
+          "arn:aws:events:${var.region}:${local.account_id}:rule/StepFunctionsGetEventsForBatchJobsRule",
         ]
       },
     ]
@@ -169,6 +270,13 @@ resource "aws_sfn_state_machine" "pipeline" {
   name       = "${var.project}-pipeline"
   role_arn   = aws_iam_role.pipeline.arn
   definition = jsonencode(local.pipeline_definition)
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_scoring || var.scoring_image_digest != ""
+      error_message = "Publish the scoring image and set its immutable digest before enabling scoring."
+    }
+  }
 
   # The definition names the role's permissions but not the policy holding them, and the
   # API validates them as it writes. Without this, a new .sync step can be applied before
