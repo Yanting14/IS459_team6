@@ -4,6 +4,8 @@ S3 is never mocked: the job takes local folders in place of S3 URIs.
 """
 
 import json
+import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -199,6 +201,35 @@ def test_curated_transfers_carry_no_laundering_mark(spark, raw, curated):
     assert not [c for c in transfers(spark, curated).columns if "laundering" in c]
 
 
+def test_transfer_identity_and_labels_survive_sorting_and_quarantine(spark, quarantine_run):
+    df = transfers(spark, quarantine_run)
+    rows = df.orderBy("source_row_id").collect()
+    assert [r.source_row_id for r in rows] == list(range(len(MEDIUM_ROWS)))
+    digest = hashlib.sha256(Path(rows[0].source_file).read_bytes()).hexdigest()
+    assert [r.transfer_id for r in rows] == [f"{digest}:{i}" for i in range(len(MEDIUM_ROWS))]
+    marks = spark.read.parquet(str(quarantine_run / PREFIX / "transfer_labels"))
+    joined = df.join(marks.select("transfer_id", "laundering_mark"), "transfer_id")
+    assert joined.count() == len(MEDIUM_ROWS)
+    assert [r.laundering_mark for r in joined.orderBy('source_row_id').collect()] == [
+        int(row.rsplit(',', 1)[1]) for row in MEDIUM_ROWS]
+
+
+def test_identity_does_not_depend_on_input_split_size(spark, raw):
+    first = prepare.read_transfers(spark, str(raw), 'medium').orderBy('source_row_id').collect()
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    key = 'mapreduce.input.fileinputformat.split.maxsize'
+    old = conf.get(key)
+    try:
+        conf.set(key, '128')
+        second = prepare.read_transfers(spark, str(raw), 'medium').orderBy('source_row_id').collect()
+    finally:
+        if old is None:
+            conf.unset(key)
+        else:
+            conf.set(key, old)
+    assert first == second
+
+
 def test_self_transfers_are_kept(spark, raw, curated):
     run_job(raw, curated)
 
@@ -278,6 +309,9 @@ def test_each_rule_quarantines_its_row_with_reason_source_file_and_row_number(
         zip(range(first_broken, first_broken + len(BROKEN_ROWS)), BROKEN_REASONS))
     tail = f"/raw-broken/transactions/variant=HI/size=medium/{TRANS_CSV}"
     assert all(r.source_file.endswith(tail) for r in rows)
+    assert all(r.transfer_id == f"{r.source_sha256}:{r.source_row_id}" for r in rows)
+    assert all(r.source_row_id == r.row_number - 1 for r in rows)
+    assert only_report(quarantine_run)['schema_version'] == 2
 
 
 def test_quarantined_rows_are_partitioned_by_run(spark, quarantine_run):

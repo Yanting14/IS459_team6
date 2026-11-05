@@ -36,19 +36,28 @@ _Avoid_: Local view, own-bank view
 ### Detection
 
 **Account-day**:
-One account on one calendar day on which it made or received at least one transfer with another account; the unit that is scored and ranked. A day of nothing but self-transfers is not one, because every feature excludes self-transfers.
+One account on one calendar day on which it made or received at least one transfer with another account; the unit that is scored and ranked. A day of nothing but self-transfers is not eligible. The seven-day feature table excludes self-transfers; the GIN graph snapshot and daily review score include them for eligible accounts.
 
 **Lookback window**:
-The 7 calendar days ending with (and including) an account-day's day.
+For the seven-day feature table, the 7 calendar days ending with (and including) an account-day's day. The frozen GIN uses a cumulative graph snapshot instead.
 
 **Feature**:
-A number describing an account's behaviour over its lookback window, used as model input.
+A number used as model input. The seven-day table describes account behaviour over a lookback window; GIN features describe transfer edges and account nodes in a graph snapshot.
+
+**Graph snapshot**:
+Transfers from the model's time origin up to, but excluding, a declared cutoff, filtered to the shared view or bank view before computing features. Includes self-transfers and repeated transfers.
+
+**Transfer ID**:
+The source file's SHA-256 followed by its zero-based original data-row number. Stable across sorting and quarantine; separate from an account's numeric graph node ID.
+
+**Daily review score**:
+An eligible account-day's maximum incident transfer score that day, including self-transfers. Eligibility still requires at least one non-self transfer. Scores are rankings, not calibrated probabilities.
 
 **Counterparty feature**:
-A feature built from other accounts' transfers, so it is the only kind whose value differs between the shared view and a bank view.
+A feature built from other accounts' transfers. In the seven-day table only these features differ for a bank's own accounts between views. The GIN additionally depends on the visible graph and its node summaries.
 
 **Label**:
-Whether an account took part in a laundering transfer on that account-day; the training target and never a model input.
+Ground truth, never a model input. A transfer label records whether that transfer was marked as laundering. An account-day label records whether the account took part in a laundering transfer on that day, at the eligible account-day grain.
 _Avoid_: Is laundering, target
 
 ### Data quality

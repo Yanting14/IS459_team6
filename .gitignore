@@ -50,6 +50,7 @@ coverage.xml
 *.lcov
 .hypothesis/
 .pytest_cache/
+pytest-cache-files-*/
 cover/
 
 # Translations
@@ -225,6 +226,13 @@ __marimo__/
 *.tfstate.*
 crash.log
 *.tfvars
+*.tfvars.json
+*.tfplan
 !example.tfvars
 infra/build/
 tfplan
+
+# Local model bundles, graph arrays and scoring runs
+artifacts/
+*.pt
+*.npy
