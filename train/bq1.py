@@ -7,9 +7,12 @@ Modes:
   train     fit logistic regression and gradient-boosted trees, pick the winner on the
             validation days, report both on the test days, save both models
   baseline  hand-written AML rules on the same features, thresholds from training days only
+  baseline-tuned
+            the same rules, weighted 0-3 each to do best on the validation days' labels: a
+            best case for rules tuned by hand, reported on the test days
   score     rank one day's account-days with a pinned model; reads no labels
 
-Arguments (train and baseline):
+Arguments (train, baseline and baseline-tuned):
   --curated       curated version prefix, e.g. s3://<curated>/ibm-aml/v2
   --out           output folder, e.g. s3://<models>/bq1/<version>
   --train-from, --train-to, --val, --test, --k, --neg-fraction, --seed
@@ -23,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import itertools
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -79,6 +83,14 @@ RULES = [
     ("cross_bank_spread", [("cp_banks", 0.99, ">=")]),
     ("large_payment", [("max_usd", 0.99, ">=")]),
 ]
+
+# The tuned baseline weighs each rule 0-3, where 0 drops it, choosing on validation labels.
+WEIGHTS = (0, 1, 2, 3)
+TUNED_RULE = ("The weighting with the highest mean daily Precision@K over the validation days "
+              "wins; ties go to the earlier weighting in itertools.product order. Thresholds are "
+              "the label-free baseline's.")
+TUNED_NOTE = ("Uses the validation days' labels to choose rules and weights, so it is a best case "
+              "for hand-tuned rules, not label-free monitoring. Test days are never used to choose.")
 
 
 # --- Files ---------------------------------------------------------------------
@@ -317,7 +329,8 @@ def rule_thresholds(train_rows) -> dict:
     return {f"{f}@{p}": row[f"{f}@{p}"] for f, p in wanted}
 
 
-def rule_score(thresholds: dict):
+def rule_flags(thresholds: dict) -> list:
+    """One 0/1 column per rule, in RULES order; a missing value never fires a rule."""
     fired = []
     for _, conditions in RULES:
         test = None
@@ -326,7 +339,18 @@ def rule_score(thresholds: dict):
             c = F.col(f) >= t if op == ">=" else F.col(f) <= t
             test = c if test is None else test & c
         fired.append(F.coalesce(test, F.lit(False)).cast("int"))
-    return sum(fired[1:], fired[0])
+    return fired
+
+
+def rule_score(thresholds: dict, weights=None):
+    flags = rule_flags(thresholds)
+    weights = weights or [1] * len(flags)
+    terms = [flag * w for flag, w in zip(flags, weights)]
+    return sum(terms[1:], terms[0])
+
+
+def rule_order():
+    return [F.desc("score"), F.desc_nulls_last("usd_out"), *(F.asc(c) for c in ACCOUNT)]
 
 
 def baseline(spark: SparkSession, args) -> dict:
@@ -337,7 +361,7 @@ def baseline(spark: SparkSession, args) -> dict:
     thresholds = rule_thresholds(read_table(spark, args.curated, "features", splits["train"]))
     data = labelled(spark, args.curated, splits["val"] + splits["test"])
     scored = data.withColumn("score", rule_score(thresholds))
-    order = [F.desc("score"), F.desc_nulls_last("usd_out"), *(F.asc(c) for c in ACCOUNT)]
+    order = rule_order()
     metrics = {
         "created": datetime.now(timezone.utc).isoformat(),
         "curated": args.curated, "k": args.k, "splits": splits,
@@ -352,6 +376,99 @@ def baseline(spark: SparkSession, args) -> dict:
     write_json(spark, f"{out}/metrics.json", metrics)
     write_text(spark, f"{out}/_SUCCESS", "")
     log.info("Baseline written to %s", out)
+    return metrics
+
+
+def weight_grid() -> list[tuple]:
+    return [w for w in itertools.product(WEIGHTS, repeat=len(RULES)) if any(w)]
+
+
+def tuning_candidates(scored, k: int):
+    """Per day, every account-day that fires a rule plus the first k that fire none, in the
+    rules' tie order. A non-negative weighting cannot put any other row in a day's top k:
+    it scores 0 and at least k rows scoring 0 come before it."""
+    flags = [f"rule_{i}" for i in range(len(RULES))]
+    fired = sum((F.col(f) for f in flags[1:]), F.col(flags[0])) > 0
+    tie = rule_order()[1:]
+    rows = (scored
+            .withColumn("tie", F.row_number().over(Window.partitionBy("date").orderBy(*tie)))
+            .withColumn("quiet_rank", F.row_number().over(
+                Window.partitionBy("date", fired).orderBy(*tie)))
+            .where(fired | (F.col("quiet_rank") <= k))
+            .select("date", "tie", LABEL, *flags).collect())
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r)
+    return by_day
+
+
+def tune_weights(by_day: dict, eligible: dict, k: int):
+    """Exact daily Precision@k of every weighting on the candidates; the highest mean wins,
+    ties to the earlier weighting in grid order."""
+    import numpy as np
+
+    days = []
+    for day in sorted(by_day):
+        rows = by_day[day]
+        bits = np.array([[r[f"rule_{i}"] for i in range(len(RULES))] for r in rows], dtype=np.int64)
+        tie = np.array([r["tie"] for r in rows], dtype=np.int64)
+        label = np.array([r[LABEL] for r in rows], dtype=np.int64)
+        days.append((day, bits, tie, label, min(k, eligible[day])))
+    best, best_mean, results = None, -1.0, []
+    for w in weight_grid():
+        precisions = []
+        for day, bits, tie, label, reviewed in days:
+            s = bits @ np.array(w, dtype=np.int64)
+            # Higher score first, then the tie order: one integer key, smallest first.
+            key = (s.max() - s) * (int(tie.max()) + 1) + tie
+            top = np.argpartition(key, reviewed - 1)[:reviewed] if reviewed < len(key) else key.argsort()
+            precisions.append(int(label[top].sum()) / reviewed if reviewed else 0.0)
+        mean = sum(precisions) / len(precisions)
+        results.append((w, mean))
+        if mean > best_mean:
+            best, best_mean = w, mean
+    return best, best_mean, results
+
+
+def baseline_tuned(spark: SparkSession, args) -> dict:
+    out = args.out.rstrip("/")
+    refuse_existing(spark, out)
+    splits = split_days(args.train_from, args.train_to, args.val, args.test)
+    # The same label-free thresholds as the baseline; only the weights see labels, and only
+    # the validation days' labels.
+    thresholds = rule_thresholds(read_table(spark, args.curated, "features", splits["train"]))
+    data = labelled(spark, args.curated, splits["val"] + splits["test"])
+    flagged = data.select("*", *(f.alias(f"rule_{i}") for i, f in enumerate(rule_flags(thresholds))))
+    val = flagged.where(F.col("date").isin(splits["val"])).cache()
+    eligible = {r["date"]: r["count"] for r in val.groupBy("date").count().collect()}
+    weights, val_mean, results = tune_weights(tuning_candidates(val, args.k), eligible, args.k)
+    log.info("Best weights %s: validation Precision@%d %.4f", weights, args.k, val_mean)
+
+    weighted = sum((F.col(f"rule_{i}") * w for i, w in enumerate(weights) if w), F.lit(0))
+    metrics = {
+        "created": datetime.now(timezone.utc).isoformat(),
+        "curated": args.curated, "k": args.k, "splits": splits,
+        "rules": [{"name": n, "conditions": [f"{f} {op} p{round(p * 100)} ({f}@{p})"
+                                             for f, p, op in c]} for n, c in RULES],
+        "thresholds": thresholds,
+        "weights": {name: w for (name, _), w in zip(RULES, weights)},
+        "grid": f"every weighting in {list(WEIGHTS)}^{len(RULES)} except all zero "
+                f"({len(results)}); 0 drops a rule",
+        "selection_rule": TUNED_RULE,
+        "label_use": TUNED_NOTE,
+        "score": "weighted sum of rules fired; ties by usd_out descending, then the account",
+    }
+    for split in ("val", "test"):
+        ranked = rank_daily(flagged.where(F.col("date").isin(splits[split]))
+                            .withColumn("score", weighted), rule_order())
+        metrics[split] = daily_metrics(ranked, args.k)
+    if abs(mean_precision(metrics["val"]) - val_mean) > 1e-12:
+        raise AssertionError(f"tuning measured {val_mean} on validation, Spark ranking measured "
+                             f"{mean_precision(metrics['val'])}")
+    metrics["val_mean_precision_at_k"] = val_mean
+    write_json(spark, f"{out}/metrics.json", metrics)
+    write_text(spark, f"{out}/_SUCCESS", "")
+    log.info("Tuned baseline written to %s", out)
     return metrics
 
 
@@ -418,7 +535,7 @@ def score(spark: SparkSession, args) -> dict:
 def parse(argv: list[str] | None):
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(dest="mode", required=True)
-    for name in ("train", "baseline"):
+    for name in ("train", "baseline", "baseline-tuned"):
         m = modes.add_parser(name)
         m.add_argument("--curated", required=True)
         m.add_argument("--out", required=True)
@@ -443,7 +560,8 @@ def main(argv: list[str] | None = None) -> dict:
     args = parse(argv)
     spark = SparkSession.builder.appName(f"bq1-{args.mode}").getOrCreate()
     spark.conf.set("spark.sql.session.timeZone", "UTC")
-    return {"train": train, "baseline": baseline, "score": score}[args.mode](spark, args)
+    modes = {"train": train, "baseline": baseline, "baseline-tuned": baseline_tuned, "score": score}
+    return modes[args.mode](spark, args)
 
 
 if __name__ == "__main__":

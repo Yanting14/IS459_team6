@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 import bq1
@@ -49,7 +50,7 @@ def account_day(i: int, d: int) -> dict:
     }
 
 
-def write_curated(spark, root: Path, labels: bool = True, tweak=None) -> str:
+def write_curated(spark, root: Path, labels: bool = True, tweak=None, label_of=None) -> str:
     rows, label_rows = [], []
     for d, day in enumerate(DAYS):
         for i in range(ACCOUNTS):
@@ -58,7 +59,7 @@ def write_curated(spark, root: Path, labels: bool = True, tweak=None) -> str:
                 tweak(day, values)
             key = (BANKS[i % 3], f"00{i:04d}", day)
             rows.append((*key, *(values[f] for f in bq1.FEATURES)))
-            label_rows.append((*key, int(i % 10 == 0)))
+            label_rows.append((*key, label_of(i, day) if label_of else int(i % 10 == 0)))
     (spark.createDataFrame(rows, SCHEMA).write.partitionBy("date")
      .parquet(str(root / "features")))
     if labels:
@@ -242,6 +243,57 @@ def test_baseline_counts_rules_fired_and_ranks_the_launderers_first(spark, curat
     metrics = bq1.main(["baseline", "--curated", curated, "--out", str(tmp_path / "b"),
                         *DATE_ARGS])
     assert metrics["test"][0]["tp"] == 3
+
+
+def test_tuned_baseline_reports_the_test_days_with_weights_chosen_on_validation(spark, curated,
+                                                                                 tmp_path):
+    plain = bq1.main(["baseline", "--curated", curated, "--out", str(tmp_path / "p"), *DATE_ARGS])
+    tuned = bq1.main(["baseline-tuned", "--curated", curated, "--out", str(tmp_path / "t"),
+                      *DATE_ARGS])
+    assert set(tuned["weights"]) == {name for name, _ in bq1.RULES}
+    assert "(4095)" in tuned["grid"]
+    assert tuned["thresholds"] == plain["thresholds"]
+    # The label-free weighting is in the grid, so the tuned rules cannot do worse on validation.
+    assert tuned["val_mean_precision_at_k"] >= bq1.mean_precision(plain["val"])
+    assert [d["date"] for d in tuned["val"]] == ["2022-09-04"]
+    assert [d["date"] for d in tuned["test"]] == ["2022-09-05"]
+    assert_success_last(tmp_path / "t")
+
+
+def test_test_day_labels_cannot_change_the_tuned_weights(spark, curated, tmp_path):
+    def other_test_labels(i, day):
+        return int(i % 10 == 5) if day == "2022-09-05" else int(i % 10 == 0)
+
+    changed = write_curated(spark, tmp_path / "changed", label_of=other_test_labels)
+    first = bq1.main(["baseline-tuned", "--curated", curated, "--out", str(tmp_path / "a"),
+                      *DATE_ARGS])
+    second = bq1.main(["baseline-tuned", "--curated", changed, "--out", str(tmp_path / "b"),
+                       *DATE_ARGS])
+    assert first["weights"] == second["weights"]
+    assert first["val"] == second["val"]
+    assert first["test"] != second["test"]
+
+
+def test_tuning_measures_every_weighting_exactly_as_the_spark_ranking_does(spark):
+    # Two days, overlapping rules, tied and missing usd_out, and k cutting through ties.
+    rows = []
+    for day in ("2022-09-01", "2022-09-02"):
+        for i in range(40):
+            bits = [int((i * (r + 3) + len(day) * r) % (r + 4) == 0) for r in range(len(bq1.RULES))]
+            usd = None if i % 9 == 0 else float((i * 7) % 5)
+            rows.append(("1", f"{i:03d}", day, usd, int((i * 5) % 7 < 2), *bits))
+    flags = [f"rule_{r}" for r in range(len(bq1.RULES))]
+    df = spark.createDataFrame(rows, "bank_id string, account_number string, date string, "
+                                     f"usd_out double, {bq1.LABEL} int, "
+                                     + ", ".join(f"{f} int" for f in flags))
+    k = 5
+    eligible = {"2022-09-01": 40, "2022-09-02": 40}
+    _, _, results = bq1.tune_weights(bq1.tuning_candidates(df, k), eligible, k)
+    measured = dict(results)
+    for w in [(1,) * 6, (0, 0, 0, 0, 0, 1), (3, 0, 1, 2, 0, 1), (0, 2, 0, 0, 3, 0), (1, 3, 2, 0, 1, 1)]:
+        scored = df.withColumn("score", sum((df[f] * x for f, x in zip(flags, w)), F.lit(0)))
+        days = bq1.daily_metrics(bq1.rank_daily(scored, bq1.rule_order()), k)
+        assert measured[w] == pytest.approx(bq1.mean_precision(days), abs=1e-12), w
 
 
 # --- Score ---------------------------------------------------------------------
