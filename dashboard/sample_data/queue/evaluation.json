@@ -1,0 +1,13 @@
+{
+  "model_version": "sample-gin",
+  "start": "2022-09-14",
+  "cutoff": "2022-09-15",
+  "daily": true,
+  "k": 150,
+  "reviewed": 150,
+  "eligible": 1750,
+  "positive_accounts": 152,
+  "true_positives": 86,
+  "precision_at_k": 0.5733333333333334,
+  "recall_at_k": 0.5657894736842105
+}
