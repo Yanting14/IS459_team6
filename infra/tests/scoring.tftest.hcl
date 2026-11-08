@@ -30,6 +30,12 @@ mock_provider "aws" {
 }
 mock_provider "archive" {}
 
+# The repository defaults, not team.auto.tfvars.json, which terraform test also loads.
+variables {
+  enable_scoring       = false
+  scoring_image_digest = ""
+}
+
 run "scoring_disabled_by_default" {
   command = plan
   assert {

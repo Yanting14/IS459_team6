@@ -2,7 +2,8 @@ locals {
   pipeline_definition = {
     Comment = "IS459 AML pipeline"
     StartAt = "CheckRawZone"
-    States = {
+    # BQ1's states are in bq1.tf; they run between Prepare and the GIN's scoring.
+    States = merge(local.bq1_states, {
       CheckRawZone = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -94,7 +95,7 @@ locals {
         }]
         # Keep execution-supplied scoring options; EMR's response is not input.
         ResultPath = null
-        Next       = "ScoringConfiguration"
+        Next       = "BQ1Defaults"
       }
 
       PipelineComplete = { Type = "Succeed" }
@@ -183,7 +184,7 @@ locals {
         ResultPath = "$.scoring_result"
         End        = true
       }
-    }
+    })
   }
 }
 
@@ -281,7 +282,7 @@ resource "aws_sfn_state_machine" "pipeline" {
   # The definition names the role's permissions but not the policy holding them, and the
   # API validates them as it writes. Without this, a new .sync step can be applied before
   # the permission it needs.
-  depends_on = [aws_iam_role_policy.pipeline]
+  depends_on = [aws_iam_role_policy.pipeline, aws_iam_role_policy.pipeline_bq1]
 }
 
 # --- Daily trigger ------------------------------------------------------------

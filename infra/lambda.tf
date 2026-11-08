@@ -1,7 +1,10 @@
+# A fixed file mode keeps the zip, and so source_code_hash, the same on every machine:
+# a Docker mount on Windows reports 0777 where the deployed zip has 0666.
 data "archive_file" "check_raw" {
-  type        = "zip"
-  source_dir  = "${path.module}/../lambdas/check_raw"
-  output_path = "${path.module}/build/check_raw.zip"
+  type             = "zip"
+  source_dir       = "${path.module}/../lambdas/check_raw"
+  output_path      = "${path.module}/build/check_raw.zip"
+  output_file_mode = "0666"
 }
 
 data "aws_iam_policy_document" "lambda_assume" {

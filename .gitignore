@@ -229,6 +229,8 @@ crash.log
 *.tfvars.json
 *.tfplan
 !example.tfvars
+# The team's applied settings: names, prefixes and an image digest, never secrets.
+!infra/team.auto.tfvars.json
 infra/build/
 tfplan
 

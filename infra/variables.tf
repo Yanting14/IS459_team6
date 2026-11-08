@@ -120,3 +120,25 @@ variable "scoring_timeout_seconds" {
     error_message = "Batch timeout must be an integer of at least 60 seconds."
   }
 }
+
+variable "bq1_model_version" {
+  description = "Pinned BQ1 model under s3://<models>/bq1/. Empty skips BQ1 scoring unless an execution retrains."
+  type        = string
+  default     = ""
+}
+
+variable "bq1_date" {
+  description = "Default dataset day BQ1 scores; a historical replay, not the wall-clock date."
+  type        = string
+  default     = "2022-09-15"
+}
+
+variable "bq1_k" {
+  description = "BQ1 daily review budget."
+  type        = number
+  default     = 1000
+  validation {
+    condition     = var.bq1_k >= 1 && floor(var.bq1_k) == var.bq1_k
+    error_message = "bq1_k must be a positive integer."
+  }
+}
