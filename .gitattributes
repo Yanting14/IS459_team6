@@ -1,3 +1,8 @@
+# Terraform hashes the job scripts and the Lambda zip, so their bytes must not depend on
+# the checkout's platform: Python is LF everywhere.
+*.py text eol=lf
+
 # Frozen source hashes include line endings and upstream whitespace.
 # Preserve the supplied bytes and exclude these copies from whitespace linting.
+# Last, so it overrides the rule above.
 scoring/vendor/* -text -whitespace
