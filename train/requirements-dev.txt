@@ -1,0 +1,4 @@
+# Local tests only; EMR provides Spark and numpy. Keep pyspark on the EMR 7 release's Spark version.
+pyspark==3.5.5
+numpy
+pytest>=8
