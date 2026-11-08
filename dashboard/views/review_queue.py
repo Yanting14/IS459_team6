@@ -77,7 +77,7 @@ if show_rings:
 
 # ---- the queue
 st.subheader("Ranked queue")
-cols = ["rank", "bank_id", "account_id", "score"] + (["ring_pattern"] if show_rings else []) + ["supporting_transfer_id"]
+cols = ["rank", "bank_id", "account_id", "score_exact"] + (["ring_pattern"] if show_rings else []) + ["supporting_transfer_id"]
 table = view[cols].reset_index(drop=True)
 event = st.dataframe(
     table, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="queue_table",
@@ -85,8 +85,10 @@ event = st.dataframe(
         "rank": st.column_config.NumberColumn("Rank", width="small"),
         "bank_id": st.column_config.TextColumn("Bank", width="small"),
         "account_id": st.column_config.TextColumn("Account"),
-        "score": st.column_config.ProgressColumn("Risk score", format="%.3f",
-                                                 min_value=float(queue["score"].min()), max_value=float(queue["score"].max())),
+        "score_exact": st.column_config.TextColumn(
+            "Risk score (exact)", width="medium",
+            help="The model's score at full precision, as written in accounts.csv. Rank order is the ranking; "
+                 "equal scores are ordered by the scoring run's tie-break."),
         "ring_pattern": st.column_config.TextColumn("Known ring pattern (ground truth)"),
         "supporting_transfer_id": st.column_config.TextColumn("Supporting transfer", help="The highest-scoring transfer behind the account's score."),
     })

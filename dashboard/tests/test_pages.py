@@ -7,7 +7,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 ROOT = Path(__file__).resolve().parent.parent
-os.environ["DASH_SOURCE"] = "sample"
+os.environ.setdefault("DASH_SOURCE", "sample")
 sys.path.insert(0, str(ROOT))
 
 PAGES = ["views/review_queue.py", "views/account_investigation.py", "views/sharing_experiment.py"]

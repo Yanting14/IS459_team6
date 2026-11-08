@@ -75,6 +75,8 @@ def load_queue() -> pd.DataFrame:
     )
     df["bank_id"] = df["bank_id"].str.strip()
     df["account_id"] = df["account_id"].str.strip()
+    # the score at full precision: the top of the queue saturates near 1, so rounding hides the order
+    df["score_exact"] = df["score"].astype(float).map(lambda v: repr(float(v)))
     return df.sort_values("rank").reset_index(drop=True)
 
 
