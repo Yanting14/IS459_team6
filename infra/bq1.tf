@@ -136,13 +136,13 @@ locals {
     BackoffRate     = 2
   }]
 
-  # Prepare -> BQ1 options -> (TrainBQ1) -> ScoreBQ1 -> the GIN's ScoringConfiguration.
-  # Execution input may carry {"bq1": {"retrain": true, "date": ..., "model_version": ..., "k": ...}}.
+  # Prepare -> BQ1 options -> (TrainBQ1) -> ScoreBQ1 (one job per day) -> the GIN's ScoringConfiguration.
+  # Execution input may carry {"bq1": {"retrain": true, "dates": [...], "model_version": ..., "k": ...}}.
   bq1_states = {
     BQ1Defaults = {
       Type = "Pass"
       Result = {
-        retrain = false, date = var.bq1_date, model_version = var.bq1_model_version, k = var.bq1_k
+        retrain = false, dates = var.bq1_dates, model_version = var.bq1_model_version, k = var.bq1_k
       }
       ResultPath = "$.bq1_defaults"
       Next       = "HasBQ1Options"
@@ -218,26 +218,44 @@ locals {
       Next       = "ScoreBQ1"
     }
 
+    # One score job per day, one at a time, each writing <queue>/<execution>/date=<day>/.
     ScoreBQ1 = {
-      Type     = "Task"
-      Resource = "arn:aws:states:::emr-serverless:startJobRun.sync"
-      Parameters = {
-        ApplicationId           = aws_emrserverless_application.spark.id
-        ExecutionRoleArn        = aws_iam_role.bq1_score.arn
-        Name                    = "${var.project}-bq1-score"
-        ExecutionTimeoutMinutes = 60
-        JobDriver = {
-          SparkSubmit = {
-            EntryPoint              = local.bq1_entry_point
-            "EntryPointArguments.$" = "States.Array('score', '--curated', '${local.bq1_curated_uri}', '--model', $.bq1_model.uri, '--date', $.bq1_request.options.date, '--k', States.Format('{}', $.bq1_request.options.k), '--out', States.Format('${local.bq1_queue_uri}/{}', $$.Execution.Name))"
+      Type           = "Map"
+      ItemsPath      = "$.bq1_request.options.dates"
+      MaxConcurrency = 1
+      ItemSelector = {
+        "date.$"  = "$$.Map.Item.Value"
+        "model.$" = "$.bq1_model.uri"
+        "k.$"     = "$.bq1_request.options.k"
+      }
+      ItemProcessor = {
+        ProcessorConfig = { Mode = "INLINE" }
+        StartAt         = "ScoreBQ1Day"
+        States = {
+          ScoreBQ1Day = {
+            Type     = "Task"
+            Resource = "arn:aws:states:::emr-serverless:startJobRun.sync"
+            Parameters = {
+              ApplicationId           = aws_emrserverless_application.spark.id
+              ExecutionRoleArn        = aws_iam_role.bq1_score.arn
+              Name                    = "${var.project}-bq1-score"
+              ExecutionTimeoutMinutes = 60
+              JobDriver = {
+                SparkSubmit = {
+                  EntryPoint              = local.bq1_entry_point
+                  "EntryPointArguments.$" = "States.Array('score', '--curated', '${local.bq1_curated_uri}', '--model', $.model, '--date', $.date, '--k', States.Format('{}', $.k), '--out', States.Format('${local.bq1_queue_uri}/{}/date={}', $$.Execution.Name, $.date))"
+                }
+              }
+              ConfigurationOverrides = local.bq1_monitoring
+            }
+            TimeoutSeconds = 4200
+            Retry          = local.bq1_retry
+            End            = true
           }
         }
-        ConfigurationOverrides = local.bq1_monitoring
       }
-      TimeoutSeconds = 4200
-      Retry          = local.bq1_retry
-      ResultPath     = null
-      Next           = "ScoringConfiguration"
+      ResultPath = null
+      Next       = "ScoringConfiguration"
     }
   }
 }

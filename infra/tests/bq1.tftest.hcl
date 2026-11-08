@@ -97,7 +97,27 @@ run "the_score_role_cannot_read_labels" {
     error_message = "The train role reads labels under the curated prefix."
   }
   assert {
-    condition     = local.pipeline_definition.States.ScoreBQ1.Parameters.Name == "is459-team6-bq1-score"
-    error_message = "ScoreBQ1 is the score job."
+    condition     = local.pipeline_definition.States.ScoreBQ1.ItemProcessor.States.ScoreBQ1Day.Parameters.Name == "is459-team6-bq1-score"
+    error_message = "ScoreBQ1 runs the score job."
+  }
+}
+
+run "score_publishes_every_listed_day" {
+  command = apply
+  assert {
+    condition     = local.pipeline_definition.States.BQ1Defaults.Result.dates == tolist(["2022-09-15", "2022-09-16"])
+    error_message = "By default both test days are scored."
+  }
+  assert {
+    condition     = local.pipeline_definition.States.ScoreBQ1.Type == "Map" && local.pipeline_definition.States.ScoreBQ1.ItemsPath == "$.bq1_request.options.dates"
+    error_message = "ScoreBQ1 must run once per listed day."
+  }
+  assert {
+    condition     = strcontains(local.pipeline_definition.States.ScoreBQ1.ItemProcessor.States.ScoreBQ1Day.Parameters.JobDriver.SparkSubmit["EntryPointArguments.$"], "/{}/date={}', $$.Execution.Name, $.date)")
+    error_message = "Each day's queue goes to its own folder under the execution."
+  }
+  assert {
+    condition     = local.pipeline_definition.States.ScoreBQ1.ItemProcessor.States.ScoreBQ1Day.Parameters.ExecutionRoleArn == aws_iam_role.bq1_score.arn
+    error_message = "Every day is scored by the role that cannot read labels."
   }
 }

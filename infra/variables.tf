@@ -127,10 +127,14 @@ variable "bq1_model_version" {
   default     = ""
 }
 
-variable "bq1_date" {
-  description = "Default dataset day BQ1 scores; a historical replay, not the wall-clock date."
-  type        = string
-  default     = "2022-09-15"
+variable "bq1_dates" {
+  description = "Default dataset days BQ1 scores, one queue each; a historical replay, not the wall-clock date."
+  type        = list(string)
+  default     = ["2022-09-15", "2022-09-16"]
+  validation {
+    condition     = length(var.bq1_dates) > 0 && alltrue([for d in var.bq1_dates : can(regex("^\\d{4}-\\d{2}-\\d{2}$", d))])
+    error_message = "bq1_dates must list at least one YYYY-MM-DD day."
+  }
 }
 
 variable "bq1_k" {
