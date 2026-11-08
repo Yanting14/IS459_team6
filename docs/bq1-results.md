@@ -15,9 +15,14 @@ reviewed. Positives are eligible accounts with a laundering transfer that day. P
 | 2022-09-15 | 899,565 | 3,632 | 4.9% | 1.35% | 38.6% | 10.63% | **52.4%** | **14.43%** | 80.70% | 22.22% |
 | 2022-09-16 | 1,421,148 | 3,757 | 4.9% | 1.30% | 31.1% | 8.28% | **45.5%** | **12.11%** | 72.30% | 19.24% |
 | True positives (15 / 16 Sep) | | | 49 / 49 | | 386 / 311 | | 524 / 455 | | 807 / 723 | |
+| Best-case rules, tuned on 13-14 Sep labels (15 / 16 Sep; TP 131 / 112) | | | 13.1% / 11.2% | 3.61% / 2.98% | | | | | | |
 
 - GBT is the selected model. It finds 10.7x (15 Sep) and 9.3x (16 Sep) as many laundering accounts as the rules
   in the same 1,000 reviews.
+- Best-case rules keep the label-free thresholds but weight each rule 0-3, choosing among all 4,095 weightings by
+  mean Precision@1,000 on the 13-14 Sep labels (12.9%; test days not used). Winner: `funnel` 2, `cross_bank_spread`
+  1, `large_payment` 1, the other three dropped. It uses labels, so it is an upper bound for hand-tuned rules, and
+  GBT still finds 4.0x / 4.1x as many (job `00ga5cvathecmg0b`, 145 s, 0.832 vCPU-h, `gold/bq1/baseline-tuned/20261109`).
 - The frozen GIN is a reference, not a competitor. Its numbers come from [scoring validation](scoring-validation.md),
   on the same days, eligibility, positives and K. It sees the transfer graph and cumulative history, which the
   seven-day features do not, and it was trained elsewhere on splits not in this repository (ADR-0004).
