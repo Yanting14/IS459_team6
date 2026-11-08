@@ -1,0 +1,5 @@
+__pycache__/
+.pytest_cache/
+.streamlit/secrets.toml
+# real data pulled down from S3 for local runs -- never commit it
+data/
