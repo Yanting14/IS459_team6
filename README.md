@@ -407,9 +407,10 @@ placeholder for section 2.
 ## What has and has not been verified
 
 - The app, the data layer and the visibility analysis are tested on the sample data (`python -m pytest tests`).
-- All three pages were run headless against the real files pulled for execution `bq1-bankvis-20261109`. Every
-  queue account's (`bank_id`, `account_id`) joins to curated (`bank_id`, `account_number`), leading zeros
-  included, and the precision and recall shown for 15 and 16 Sep equal `docs/bq1-results.md`.
+- All three pages were run headless against the real files pulled for execution `bq1-bankvis-20261109` (9 Nov),
+  with no exceptions. All 1,000 queue accounts on each day join to curated (`bank_id`, `account_number`) on the
+  scored day, leading zeros included (every bank id in both queues starts with 0). The precision and recall shown
+  for 15 and 16 Sep (GBT 54.5% / 15.0% and 44.9% / 12.0%) equal `docs/bq1-results.md`.
 - The queue is ranked by gradient-boosted trees trained on EMR, using only what the account's own bank can see.
   Scores rank accounts; they are not probabilities. The three reasons are descriptive flags (the account's most
   extreme features that day), not model attributions.
