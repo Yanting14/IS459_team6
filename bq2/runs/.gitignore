@@ -1,0 +1,5 @@
+# Local working files written by submit_batch.sh and fetch_runs.py
+/jobs.tsv
+/downloads/
+/runs.json
+/sharing/
