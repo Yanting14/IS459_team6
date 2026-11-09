@@ -1,0 +1,17 @@
+bank_id,min_eligible,min_positives,selected
+000,1886,30,True
+012,2327,28,True
+020,1891,26,True
+011,1795,20,True
+02310,940,18,True
+00214,933,14,True
+01213,766,13,True
+003,1199,12,True
+025,1306,12,True
+02597,919,12,True
+001,739,10,True
+006,1265,10,True
+01208,930,10,True
+01831,764,10,True
+027,2504,10,True
+029,1522,10,True
