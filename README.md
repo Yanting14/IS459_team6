@@ -9,12 +9,14 @@ infra/                 Terraform (S3 raw + curated zones, ingest task, EMR Serve
                        Step Functions, schedule; state in S3)
 ingest/                Fargate container: Kaggle -> S3 raw zone
 prepare/               Spark job (EMR Serverless): raw zone -> curated zone
+train/                 BQ1: Spark ML on EMR Serverless (train, rules baselines, daily scoring)
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
-scoring/              Frozen GIN graph preparation, inference, ranking and evaluation
+scoring/               Frozen GIN, used for BQ2: graph preparation, inference, ranking and evaluation
+dashboard/             Streamlit review dashboard, one page per business question
 scripts/               Helper scripts
 ```
 
-## Ingestion flow
+## Pipeline flow
 
 ```
 EventBridge (daily, off by default) / manual start
@@ -24,7 +26,9 @@ EventBridge (daily, off by default) / manual start
      -> no:  Ingest (ECS Fargate)  download from Kaggle, unzip, upload to S3,
                                    write manifest.json, then _SUCCESS
      -> Prepare (EMR Serverless)   raw zone -> curated zone, waits for the job
-     -> Score (optional, Batch)    stage graph/model, score, rank, publish gold
+     -> TrainBQ1 (EMR Serverless)  only when the input has {"bq1": {"retrain": true}}
+     -> ScoreBQ1 (EMR Serverless)  one job per day in bq1.dates, with the pinned (or just-trained) model
+     -> GIN Score (optional, Batch) BQ2: stage graph/model, score, rank, publish gold
 ```
 
 The dataset is static, so ingestion really runs once. Daily runs skip it. If the
@@ -249,8 +253,44 @@ group `/ecs/is459-team6-ingest`.
 | `enable_scoring` | `false` | Enable after publishing the model bundle and scoring image |
 | `scoring_image_digest` | empty | Required immutable ECR digest when scoring is enabled |
 | `force_destroy_buckets` | `false` | Set `true` before `terraform destroy` at project end |
+| `bq1_model_version` | empty | Pinned BQ1 model under `s3://<models>/bq1/`; empty skips BQ1 scoring unless the run retrains |
+| `bq1_dates` | `["2022-09-15", "2022-09-16"]` | Days ScoreBQ1 scores, one queue each (a historical replay) |
+| `bq1_k` | `1000` | BQ1 daily review budget |
 
-## Frozen GIN scoring
+## BQ1: account prioritisation
+
+BQ1 asks whether a model ranks one bank's accounts for review better than rule-based monitoring.
+`train/bq1.py` is a Spark job on the shared EMR Serverless application, with four modes:
+
+- `train` fits logistic regression and gradient-boosted trees on 7-12 Sep, picks the winner by mean
+  Precision@1,000 on 13-14 Sep, reports both on the test days 15-16 Sep, and saves both models.
+- `score` ranks one day's eligible accounts with a pinned model and writes the top K with three
+  descriptive reasons each. It runs as `is459-team6-bq1-score`, which cannot read labels.
+- `baseline` is hand-written AML rules on the same features, thresholds from training-day percentiles only.
+- `baseline-tuned` weights the same rules 0-3 each to do best on the validation labels: a best case for
+  hand-tuned rules.
+
+BQ1 is strictly one bank's point of view. The models use only features a bank can compute from its own
+accounts' transfers; `cp_max_fan_in` and `cp_max_fan_out` describe counterparties at other banks and are left
+out. The score ranks accounts and is not a probability.
+
+Daily pipeline runs score `bq1_dates` with the model pinned in `bq1_model_version`. To retrain, start an
+execution with `{"bq1": {"retrain": true}}`: the new model is named after the execution and scores the same
+run's days, and pinning it is a separate `bq1_model_version` change.
+
+```
+s3://is459-team6-models-<account>/bq1/<execution>/            model/, runner_up/, metrics.json, _SUCCESS
+s3://is459-team6-gold-<account>/bq1/queue/<execution>/date=<day>/  accounts.csv, ranking.json, _SUCCESS
+s3://is459-team6-gold-<account>/bq1/baseline*/<run>/            the rules baselines' metrics.json
+```
+
+Results are in [BQ1 results](docs/bq1-results.md), and the design in
+[ADR-0005](docs/adr/0005-bq1-trained-on-emr.md). Tests need the same Python
+3.11 and JDK as Prepare's: `pip install -r train/requirements-dev.txt`, then `python -m pytest train`.
+
+## Frozen GIN scoring (BQ2)
+
+The frozen GIN serves BQ2 (bank view vs shared view). It is not part of BQ1.
 
 `scoring/pipeline.py` integrates the selected enriched IBM GINe without changing its
 weights or fitted transformations. It consumes curated **transfers**, not the existing
