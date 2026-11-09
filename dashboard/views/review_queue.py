@@ -115,8 +115,8 @@ else:
             "approach": st.column_config.TextColumn("Approach"),
             "precision_at_k": st.column_config.NumberColumn(f"Precision @ {k:,}", format="percent"),
             "recall_at_k": st.column_config.NumberColumn(f"Recall @ {k:,}", format="percent"),
-            "true_positives": st.column_config.NumberColumn("Launderers found"),
-            "positives": st.column_config.NumberColumn("Launderers that day"),
+            "true_positives": st.column_config.NumberColumn("Accounts with laundering found"),
+            "positives": st.column_config.NumberColumn("Accounts with laundering that day"),
         })
     st.caption(
         f"Every approach reviews the same {k:,} accounts a day from the same eligible accounts. The rules use fixed "
