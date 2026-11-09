@@ -21,11 +21,14 @@ def test_page_runs_without_error(page):
     assert not at.exception, [e.value for e in at.exception]
 
 
-def test_bank_view_hides_second_hop_transfers():
+def test_bank_view_is_the_default_and_hides_second_hop_transfers():
     at = AppTest.from_file(str(ROOT / "views/account_investigation.py"), default_timeout=60).run()
-    at.sidebar.radio[0].set_value("Bank view").run()
     assert not at.exception, [e.value for e in at.exception]
+    assert at.sidebar.radio[0].value == "Bank view"
     assert any("Bank view" in i.value for i in at.info)
+    at.sidebar.radio[0].set_value("Shared view").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not any("Bank view" in i.value for i in at.info)
 
 
 def test_queue_shows_reasons_and_no_transfer_columns():

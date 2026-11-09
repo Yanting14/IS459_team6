@@ -39,9 +39,10 @@ with st.sidebar:
     pick = st.selectbox("Queue position", range(len(queue)), index=index, format_func=lambda i: labels[i])
     st.header("What to show")
     visibility = st.radio(
-        "Who is looking?", ["Shared view", "Bank view"],
-        help="Shared view: every transfer from every bank. Bank view: only the transfers where the account's "
-             "own bank is the sender's or the receiver's bank.")
+        "Who is looking?", ["Shared view", "Bank view"], index=1,
+        help="Bank view (the default, since BQ1 is one bank's point of view): only the transfers where the "
+             "account's own bank is the sender's or the receiver's bank. Shared view: every transfer from every "
+             "bank, the BQ2 comparison.")
     second_hop = st.toggle("Include counterparties' other transfers", value=True)
     n_expand = st.slider("Counterparties to expand", 3, 15, 6, disabled=not second_hop)
     per_cp = st.slider("Transfers shown per counterparty", 3, 30, 8, disabled=not second_hop,
