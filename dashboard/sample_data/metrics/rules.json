@@ -1,0 +1,24 @@
+{
+  "note": "SYNTHETIC sample data from scripts/make_sample_data.py; the numbers mean nothing.",
+  "k": 150,
+  "test": [
+    {
+      "date": "2022-09-15",
+      "eligible": 1749,
+      "reviewed": 150,
+      "positives": 267,
+      "tp": 68,
+      "precision_at_k": 0.4533333333333333,
+      "recall_at_k": 0.2546816479400749
+    },
+    {
+      "date": "2022-09-16",
+      "eligible": 1750,
+      "reviewed": 150,
+      "positives": 152,
+      "tp": 39,
+      "precision_at_k": 0.26,
+      "recall_at_k": 0.2565789473684211
+    }
+  ]
+}

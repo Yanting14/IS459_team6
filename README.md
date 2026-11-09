@@ -332,8 +332,8 @@ A Streamlit app with one page per business question.
 
 | Page | Question | Reads |
 |---|---|---|
-| **Review queue** | Which accounts should investigators review first? | `accounts.csv`, `evaluation.json` (optional), curated `rings/` |
-| **Account investigation** | Which transaction patterns justify that priority? | the queue, curated `transfers/`, `transfer_labels/`, `transfers.parquet` |
+| **Review queue** | Which accounts should investigators review first? | the BQ1 queue (`date=<day>/accounts.csv`, `ranking.json`), `metrics/`, curated `rings/` |
+| **Account investigation** | Which transaction patterns justify that priority? | the queue, curated `transfers/`, `transfer_labels/` |
 | **Sharing experiment** | How much laundering is invisible to a single bank, and how much more would sharing detect? | curated `rings/`, `sharing/comparison.csv` |
 
 The investigation page has the **Shared view / Bank view** toggle. In bank view only transfers where the
@@ -354,32 +354,39 @@ Rebuild it with `python scripts/make_sample_data.py`.
 
 ## Run it on the real pipeline output
 
-The app reads three folders. Each can be a local path or an `s3://` URI.
+The app reads four folders. Each can be a local path or an `s3://` URI.
 
 ```
-<root>/queue/     accounts.csv  transfers.parquet  ranking.json  [evaluation.json]
-<root>/curated/   transfers/  transfer_labels/  rings/            (the curated version prefix)
-<root>/sharing/   comparison.csv                                   (Person 4's results)
+<root>/queue/     date=<day>/accounts.csv  date=<day>/ranking.json  (one BQ1 execution's queues)
+<root>/metrics/   models.json  rules.json  rules_tuned.json          (the BQ1 jobs' metrics.json)
+<root>/curated/   transfers/  transfer_labels/  rings/               (the curated version prefix)
+<root>/sharing/   comparison.csv                                     (Person 4's results)
 ```
 
-Pull the files down with the helper script. It reads the scoring run's gold receipt to find the exact
-files (and checks their SHA-256), then copies the curated transfers, labels and rings for 1 to 14 Sep
-(history up to the 14 Sep run's cutoff). Account `207567757101`, `us-east-1`; the defaults point at the
-deployed run `ibm-aml/e2e-20261105-152512` from `docs/scoring-validation.md`.
+The BQ1 queue is published at `s3://is459-team6-gold-207567757101/bq1/queue/<execution>/date=<day>/` by the
+pipeline's score step. It has no per-transfer scores and no evaluation: the score job reads no labels by
+design. Precision and recall come from the training and baseline jobs' `metrics.json` instead.
+
+Pull the files down with the helper script. For each day it refuses a queue without `_SUCCESS`, reads the
+model named in `ranking.json` and takes that model's `metrics.json`, plus the two rules baselines'. Each of
+those files is checked against its S3 ETag (its MD5). It then copies the curated transfers and labels for 1 to
+16 Sep (history up to the last queue day) and the rings. Account `207567757101`, `us-east-1`; the defaults point
+at execution `bq1-bankvis-20261109` (15 and 16 Sep) over curated `ibm-aml/e2e-20261105-152512`.
 
 ```bash
-aws sts get-caller-identity          # confirm you are logged in (set AWS_PROFILE if you use a profile)
+cd dashboard
+aws sts get-caller-identity                  # confirm you are logged in (set AWS_PROFILE if you use a profile)
 python scripts/pull_from_s3.py --dry-run     # shows the file count and total size, downloads nothing
 python scripts/pull_from_s3.py               # copies into ./data (re-run to resume)
 
 DASH_SOURCE=local DASH_ROOT=./data streamlit run app.py
 ```
 
-Use `--receipt`, `--curated`, `--from`, `--to` and `--dest` to point at a different run or date range. Put
-Person 4's `comparison.csv` in `data/sharing/`.
+Use `--execution`, `--days`, `--rules`, `--rules-tuned`, `--curated`, `--from`, `--to` and `--dest` to point at
+a different run or date range. Put Person 4's `comparison.csv` in `data/sharing/`.
 
-To read straight from S3 instead, set `DASH_SOURCE=s3` and `DASH_QUEUE_DIR`, `DASH_CURATED_DIR` and
-`DASH_SHARING_DIR` to `s3://...` prefixes. DuckDB uses your AWS credentials. Reading the 32M-row transfers
+To read straight from S3 instead, set `DASH_SOURCE=s3` and `DASH_QUEUE_DIR`, `DASH_METRICS_DIR`,
+`DASH_CURATED_DIR` and `DASH_SHARING_DIR` to `s3://...` prefixes. DuckDB uses your AWS credentials. Reading the 32M-row transfers
 table over S3 on every click is slow, so for demos copy the files locally first.
 
 ### `sharing/comparison.csv` (the contract with the BQ2 experiment)
@@ -400,14 +407,14 @@ placeholder for section 2.
 ## What has and has not been verified
 
 - The app, the data layer and the visibility analysis are tested on the sample data (`python -m pytest tests`).
-- **It has not been run against the real pipeline output.** The real-data paths follow the column names in
-  `prepare/prepare.py` and `scoring/pipeline.py`. One assumption to check first: the queue's `account_id` is
-  expected to equal the curated `sender_account_number` / `receiver_account_number`. If the investigation page
-  says "No transfers found" for a queue account, that join is the place to look.
-- `evaluation.json` is not published to the gold bucket (the scoring job never reads labels). If it is absent,
-  the queue page shows the 14, 15 and 16 Sep figures recorded in `docs/scoring-validation.md` and says so.
-- The scores are a frozen graph model's output, not an explanation. The **known ring pattern** column and the
-  orange edges are ground truth from the dataset's patterns file, shown for evaluation only and labelled as such.
+- All three pages were run headless against the real files pulled for execution `bq1-bankvis-20261109`. Every
+  queue account's (`bank_id`, `account_id`) joins to curated (`bank_id`, `account_number`), leading zeros
+  included, and the precision and recall shown for 15 and 16 Sep equal `docs/bq1-results.md`.
+- The queue is ranked by gradient-boosted trees trained on EMR, using only what the account's own bank can see.
+  Scores rank accounts; they are not probabilities. The three reasons are descriptive flags (the account's most
+  extreme features that day), not model attributions.
+- The **known ring pattern** column and the orange edges are ground truth from the dataset's patterns file, shown
+  for evaluation only and labelled as such.
 - Section 1 of the Sharing page measures *visibility* (does one bank see all of a ring's transfers), not
   *detection*. Detection comes from section 2.
 
@@ -421,7 +428,7 @@ dashlib/data.py             every read (DuckDB); pages never touch files
 dashlib/analysis.py         ring visibility, bank view, uplift (pure functions, tested)
 dashlib/charts.py           Plotly figures
 scripts/make_sample_data.py synthetic data generator
-scripts/pull_from_s3.py     downloads the real files from S3 (reads the gold receipt)
+scripts/pull_from_s3.py     downloads the real BQ1 queues, metrics and curated files from S3
 sample_data/                the generated sample (2 MB)
 tests/                      unit tests and a headless run of every page
 ```

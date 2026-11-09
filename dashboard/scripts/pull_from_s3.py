@@ -6,11 +6,13 @@
 Then run:  DASH_SOURCE=local DASH_ROOT=./data streamlit run app.py
 
 What it copies
-  data/queue/    accounts.csv, transfers.parquet, ranking.json -- the exact files named by the
-                 scoring run's gold receipt (a reader must not glob the attempt folders: failed
-                 attempts can leave unreferenced files). Each file's SHA-256 is checked.
+  data/queue/    date=<day>/accounts.csv and ranking.json for each day of one BQ1 pipeline
+                 execution. A day without _SUCCESS is refused (the score job writes it last).
+  data/metrics/  models.json: the metrics.json of the model named in the queues' ranking.json;
+                 rules.json, rules_tuned.json: the two rules baselines' metrics.json
   data/curated/  transfers/ and transfer_labels/ for the date range, and rings/ in full.
 
+Every queue and metrics file is checked against its S3 ETag (the MD5 of a single-part upload).
 It uses your normal AWS credentials (set AWS_PROFILE if you use a named profile).
 """
 from __future__ import annotations
@@ -22,10 +24,14 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_RECEIPT = ("s3://is459-team6-gold-207567757101/ibm-aml/e2e-20261105-152512/"
-                   "scoring/executions/scoring-e2e-20261105-152512.json")
+GOLD = "s3://is459-team6-gold-207567757101"
+DEFAULT_QUEUES = f"{GOLD}/bq1/queue"
+DEFAULT_EXECUTION = "bq1-bankvis-20261109"
+DEFAULT_DAYS = ("2022-09-15", "2022-09-16")
+DEFAULT_RULES = f"{GOLD}/bq1/baseline/t4-20261108"
+DEFAULT_RULES_TUNED = f"{GOLD}/bq1/baseline-tuned/20261109"
 DEFAULT_CURATED = "s3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512"
-QUEUE_FILES = ("accounts.csv", "transfers.parquet", "ranking.json")
+QUEUE_FILES = ("accounts.csv", "ranking.json")
 DATE_PART = re.compile(r"/date=(\d{4}-\d{2}-\d{2})/")
 
 
@@ -58,30 +64,66 @@ def plan_curated(s3, curated_uri: str, date_from: str, date_to: str) -> list[tup
     return wanted
 
 
-def sha256_of(path: Path) -> str:
-    h = hashlib.sha256()
+def md5_of(path: Path) -> str:
+    h = hashlib.md5()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
 
 
-def pull(s3, receipt_uri: str, curated_uri: str, date_from: str, date_to: str, dest: Path,
-         dry_run: bool = False, assume_yes: bool = False, say=print) -> None:
-    rb, rk = split_uri(receipt_uri)
-    receipt = json.loads(s3.get_object(Bucket=rb, Key=rk)["Body"].read())
-    if receipt.get("status") != "completed":
-        raise SystemExit(f"Receipt says status={receipt.get('status')!r}, not 'completed'.")
-    say(f"Receipt: run {receipt['run_id'][:12]}, model {receipt['model_version']}, "
-        f"scoring day {receipt['options'].get('start', '?')}")
+def head(s3, uri: str) -> dict | None:
+    """The object's metadata, or None if there is no such object."""
+    bucket, key = split_uri(uri)
+    found = list(list_objects(s3, bucket, key))
+    return next((o for o in found if o["Key"] == key), None)
 
-    queue = [(name, receipt["artifacts"][name]) for name in QUEUE_FILES]
+
+def finished(s3, folder: str, what: str) -> None:
+    if head(s3, f"{folder}/_SUCCESS") is None:
+        raise SystemExit(f"{what} has no _SUCCESS at {folder}/; it is not a finished run.")
+
+
+def plan_artifacts(s3, queues_uri: str, execution: str, days: list[str], rules_uri: str,
+                   tuned_uri: str) -> tuple[list[tuple[str, str, int, str]], str]:
+    """(uri, local path, bytes, etag) for every queue and metrics file, and the model folder."""
+    files: list[tuple[str, str, int, str]] = []
+    models = set()
+    for day in days:
+        folder = f"{queues_uri.rstrip('/')}/{execution}/date={day}"
+        finished(s3, folder, f"The {day} queue")
+        for name in QUEUE_FILES:
+            obj = head(s3, f"{folder}/{name}")
+            if obj is None:
+                raise SystemExit(f"{folder}/{name} is missing.")
+            files.append((f"{folder}/{name}", f"queue/date={day}/{name}", obj["Size"], obj["ETag"].strip('"')))
+        bucket, key = split_uri(f"{folder}/ranking.json")
+        models.add(json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())["model"].rstrip("/"))
+    if len(models) != 1:
+        raise SystemExit(f"The queues were scored by different models: {sorted(models)}")
+    model = models.pop()
+    for folder, local, what in ((model, "metrics/models.json", "The model"),
+                                (rules_uri.rstrip("/"), "metrics/rules.json", "The rules baseline"),
+                                (tuned_uri.rstrip("/"), "metrics/rules_tuned.json", "The best-case rules")):
+        finished(s3, folder, what)
+        obj = head(s3, f"{folder}/metrics.json")
+        if obj is None:
+            raise SystemExit(f"{folder}/metrics.json is missing.")
+        files.append((f"{folder}/metrics.json", local, obj["Size"], obj["ETag"].strip('"')))
+    return files, model
+
+
+def pull(s3, queues_uri: str, execution: str, days: list[str], rules_uri: str, tuned_uri: str,
+         curated_uri: str, date_from: str, date_to: str, dest: Path,
+         dry_run: bool = False, assume_yes: bool = False, say=print) -> None:
+    artifacts, model = plan_artifacts(s3, queues_uri, execution, days, rules_uri, tuned_uri)
+    say(f"Execution {execution}, days {', '.join(days)}, model {model}")
     curated = plan_curated(s3, curated_uri, date_from, date_to)
     if not curated:
         raise SystemExit(f"No curated parquet files found under {curated_uri} for {date_from}..{date_to}. "
                          "Check the prefix and dates.")
-    total = sum(a["bytes"] for _, a in queue) + sum(size for *_, size in curated)
-    say(f"Queue files: {len(queue)}. Curated files: {len(curated)}. Total: {total / 1e9:.2f} GB")
+    total = sum(size for _, _, size, _ in artifacts) + sum(size for *_, size in curated)
+    say(f"Queue and metrics files: {len(artifacts)}. Curated files: {len(curated)}. Total: {total / 1e9:.2f} GB")
     if dry_run:
         say("Dry run: nothing downloaded.")
         return
@@ -89,15 +131,17 @@ def pull(s3, receipt_uri: str, curated_uri: str, date_from: str, date_to: str, d
         if input("That is large. Continue? [y/N] ").strip().lower() != "y":
             raise SystemExit("Stopped.")
 
-    (dest / "queue").mkdir(parents=True, exist_ok=True)
-    for name, art in queue:
-        bucket, key = split_uri(art["uri"])
-        target = dest / "queue" / name
+    for uri, local, size, etag in artifacts:
+        bucket, key = split_uri(uri)
+        target = dest / local
+        target.parent.mkdir(parents=True, exist_ok=True)
         s3.download_file(bucket, key, str(target))
-        if sha256_of(target) != art["sha256"]:
+        # A multipart upload's ETag is not an MD5; these files are far below the multipart size.
+        ok = md5_of(target) == etag if "-" not in etag else target.stat().st_size == size
+        if not ok:
             target.unlink()
-            raise SystemExit(f"Checksum mismatch for {name}; the download was discarded.")
-        say(f"  queue/{name}  ({art['bytes'] / 1e6:.1f} MB, checksum ok)")
+            raise SystemExit(f"Checksum mismatch for {local}; the download was discarded.")
+        say(f"  {local}  ({size / 1e3:.1f} kB, checksum ok)")
 
     curated_prefix = split_uri(curated_uri)[1] + "/"
     done = 0
@@ -118,10 +162,15 @@ def pull(s3, receipt_uri: str, curated_uri: str, date_from: str, date_to: str, d
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--receipt", default=DEFAULT_RECEIPT, help="gold receipt URI of the scoring run")
+    ap.add_argument("--queues", default=DEFAULT_QUEUES, help="where the BQ1 queues are published")
+    ap.add_argument("--execution", default=DEFAULT_EXECUTION, help="the pipeline execution that scored them")
+    ap.add_argument("--days", default=",".join(DEFAULT_DAYS), help="comma-separated queue days")
+    ap.add_argument("--rules", default=DEFAULT_RULES, help="the label-free rules baseline's output folder")
+    ap.add_argument("--rules-tuned", default=DEFAULT_RULES_TUNED, help="the best-case rules' output folder")
     ap.add_argument("--curated", default=DEFAULT_CURATED, help="curated zone URI, version prefix included")
     ap.add_argument("--from", dest="date_from", default="2022-09-01", help="first transfer date to copy")
-    ap.add_argument("--to", dest="date_to", default="2022-09-14", help="last transfer date to copy (inclusive)")
+    ap.add_argument("--to", dest="date_to", default="2022-09-16",
+                    help="last transfer date to copy (inclusive): the last queue day")
     ap.add_argument("--dest", default="data", help="local folder (default ./data)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true", help="do not ask before a large download")
@@ -132,8 +181,10 @@ def main(argv: list[str] | None = None) -> None:
     except ImportError:
         sys.exit("boto3 is not installed:  pip install boto3")
     s3 = boto3.client("s3", region_name="us-east-1")
+    days = [d.strip() for d in args.days.split(",") if d.strip()]
     try:
-        pull(s3, args.receipt, args.curated, args.date_from, args.date_to, Path(args.dest), args.dry_run, args.yes)
+        pull(s3, args.queues, args.execution, days, args.rules, args.rules_tuned, args.curated,
+             args.date_from, args.date_to, Path(args.dest), args.dry_run, args.yes)
     except (BotoCoreError, ClientError) as err:
         sys.exit(f"AWS error: {err}\nCheck you are logged in (aws sts get-caller-identity) and the right "
                  "AWS_PROFILE is set.")

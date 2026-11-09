@@ -160,7 +160,8 @@ def timeline_figure(t: pd.DataFrame, focus: tuple[str, str], support_id: str | N
     def hover(d: pd.DataFrame) -> list[str]:
         out = []
         for r in d.itertuples():
-            score = "" if pd.isna(r.risk_score) else f"<br>risk score {r.risk_score:.3f}"
+            risk = getattr(r, "risk_score", None)  # BQ1 publishes no per-transfer scores
+            score = "" if pd.isna(risk) else f"<br>risk score {risk:.3f}"
             out.append(f"{r.timestamp:%d %b %Y %H:%M}<br>{r.direction} · {r.counterparty}"
                        f"<br>{r.amount_paid:,.2f} {r.payment_currency} via {r.payment_format}{score}")
         return out

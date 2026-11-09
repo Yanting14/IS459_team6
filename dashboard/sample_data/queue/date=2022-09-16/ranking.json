@@ -1,0 +1,13 @@
+{
+  "k": 150,
+  "date": "2022-09-16",
+  "window_start": "2022-09-16",
+  "cutoff": "2022-09-17",
+  "eligible": 1750,
+  "reviewed": 150,
+  "model": "sample://models/bq1/sample-bq1",
+  "model_version": "sample-bq1",
+  "reasons": "SYNTHETIC. Reasons are descriptive flags, not model attributions: the account's most extreme features that day among the eligible accounts.",
+  "score": "SYNTHETIC. score is a ranking value, not a probability.",
+  "order": "score descending, then bank_id, then account_number"
+}

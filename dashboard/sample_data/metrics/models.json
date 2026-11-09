@@ -1,0 +1,52 @@
+{
+  "note": "SYNTHETIC sample data from scripts/make_sample_data.py; the numbers mean nothing.",
+  "k": 150,
+  "winner": "gbt",
+  "runner_up": "lr",
+  "results": {
+    "gbt": {
+      "test": [
+        {
+          "date": "2022-09-15",
+          "eligible": 1749,
+          "reviewed": 150,
+          "positives": 267,
+          "tp": 138,
+          "precision_at_k": 0.92,
+          "recall_at_k": 0.5168539325842697
+        },
+        {
+          "date": "2022-09-16",
+          "eligible": 1750,
+          "reviewed": 150,
+          "positives": 152,
+          "tp": 120,
+          "precision_at_k": 0.8,
+          "recall_at_k": 0.7894736842105263
+        }
+      ]
+    },
+    "lr": {
+      "test": [
+        {
+          "date": "2022-09-15",
+          "eligible": 1749,
+          "reviewed": 150,
+          "positives": 267,
+          "tp": 134,
+          "precision_at_k": 0.8933333333333333,
+          "recall_at_k": 0.50187265917603
+        },
+        {
+          "date": "2022-09-16",
+          "eligible": 1750,
+          "reviewed": 150,
+          "positives": 152,
+          "tp": 107,
+          "precision_at_k": 0.7133333333333334,
+          "recall_at_k": 0.7039473684210527
+        }
+      ]
+    }
+  }
+}

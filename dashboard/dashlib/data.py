@@ -7,6 +7,7 @@ zero if they are ever parsed as numbers.
 from __future__ import annotations
 
 import json
+import re
 
 import duckdb
 import pandas as pd
@@ -66,38 +67,57 @@ def _transfers() -> str:
 
 # --------------------------------------------------------------------------- queue
 
+@st.cache_data(show_spinner=False)
+def queue_days() -> list[str]:
+    """The days with a published queue: one ``date=<day>`` folder each, oldest first."""
+    pattern = f"{config.QUEUE_DIR}/date=*/accounts.csv"
+    _require(pattern, "A BQ1 queue (date=<day>/accounts.csv)")
+    files = query("SELECT file FROM glob(?)", [pattern]).file
+    return sorted({m.group(1) for f in files if (m := re.search(r"date=(\d{4}-\d{2}-\d{2})", f))})
+
+
 @st.cache_data(show_spinner="Loading the review queue...")
-def load_queue() -> pd.DataFrame:
-    path = f"{config.QUEUE_DIR}/accounts.csv"
-    _require(path, "The ranked accounts file (accounts.csv)")
+def load_queue(day: str) -> pd.DataFrame:
+    path = f"{config.QUEUE_DIR}/date={day}/accounts.csv"
+    _require(path, f"The ranked accounts file for {day} (accounts.csv)")
     df = query(
-        f"SELECT * FROM read_csv('{path}', types={{'bank_id': 'VARCHAR', 'account_id': 'VARCHAR'}})"
+        f"SELECT * FROM read_csv('{path}', types={{'bank_id': 'VARCHAR', 'account_id': 'VARCHAR', "
+        f"'reason_1': 'VARCHAR', 'reason_2': 'VARCHAR', 'reason_3': 'VARCHAR'}})"
     )
     df["bank_id"] = df["bank_id"].str.strip()
     df["account_id"] = df["account_id"].str.strip()
-    # the score at full precision: the top of the queue saturates near 1, so rounding hides the order
+    # the score at full precision: neighbouring scores can differ only in late digits
     df["score_exact"] = df["score"].astype(float).map(lambda v: repr(float(v)))
     return df.sort_values("rank").reset_index(drop=True)
 
 
-def _read_json(path: str) -> dict | None:
+def _read_text(path: str) -> str | None:
     if not exists(path):
         return None
-    df = query(f"SELECT * FROM read_json_auto('{path}')")
-    if df.empty:
-        return None
-    return json.loads(df.iloc[0].to_json())
+    return str(query("SELECT content FROM read_text(?)", [path]).content[0])
+
+
+def _read_json(path: str) -> dict | None:
+    text = _read_text(path)
+    return json.loads(text) if text else None
 
 
 @st.cache_data(show_spinner=False)
-def load_ranking_meta() -> dict:
-    return _read_json(f"{config.QUEUE_DIR}/ranking.json") or {}
+def load_ranking_meta(day: str) -> dict:
+    return _read_json(f"{config.QUEUE_DIR}/date={day}/ranking.json") or {}
+
+
+METRICS_FILES = {"models": "models.json", "rules": "rules.json", "rules_tuned": "rules_tuned.json"}
 
 
 @st.cache_data(show_spinner=False)
-def load_evaluation() -> dict | None:
-    """evaluation.json is produced by a separate, optional step (`scoring.pipeline evaluate`)."""
-    return _read_json(f"{config.QUEUE_DIR}/evaluation.json")
+def load_metrics() -> dict[str, dict | None]:
+    """The BQ1 evaluation files (the models, the label-free rules, the best-case rules).
+
+    They come from the training and baseline jobs, which read labels; the score job that
+    writes the queue does not, so the queue folder has no evaluation of its own."""
+    root = config.METRICS_DIR
+    return {name: (_read_json(f"{root}/{file}") if root else None) for name, file in METRICS_FILES.items()}
 
 
 # --------------------------------------------------------------------------- rings
@@ -170,18 +190,6 @@ def transfer_labels(ids: list[str], date_from: str, date_to: str) -> pd.DataFram
             JOIN wanted w USING (transfer_id)
             WHERE l.date BETWEEN ? AND ?""",
         [date_from, date_to],
-        frames={"wanted": pd.DataFrame({"transfer_id": ids})},
-    )
-
-
-def transfer_scores(ids: list[str]) -> pd.DataFrame:
-    """Risk scores the scoring run published for the scored day (other days have none)."""
-    path = f"{config.QUEUE_DIR}/transfers.parquet"
-    if not ids or not exists(path):
-        return pd.DataFrame({"transfer_id": [], "risk_score": []})
-    return query(
-        f"""SELECT s.transfer_id, s.risk_score FROM read_parquet('{path}') s
-            JOIN wanted w USING (transfer_id)""",
         frames={"wanted": pd.DataFrame({"transfer_id": ids})},
     )
 

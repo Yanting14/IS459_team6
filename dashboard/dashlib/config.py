@@ -1,18 +1,21 @@
 """Where the dashboard reads its data from.
 
-Three folders (or S3 prefixes) feed the dashboard. Each can be a local path or an
+Four folders (or S3 prefixes) feed the dashboard. Each can be a local path or an
 ``s3://`` URI, and each is read through DuckDB, so both behave the same way.
 
-  queue    one scoring run's published files:
-             accounts.csv, transfers.parquet, ranking.json, evaluation.json (optional)
+  queue    one BQ1 pipeline execution's published queues, one folder per scored day:
+             date=<day>/accounts.csv, date=<day>/ranking.json
+  metrics  the BQ1 evaluation files, copied unchanged from S3:
+             models.json (LR and GBT), rules.json, rules_tuned.json
   curated  the Prepare job's curated zone, version prefix included:
              transfers/, transfer_labels/, rings/
   sharing  the BQ2 comparison table: comparison.csv (optional until it exists)
 
 Environment variables
   DASH_SOURCE        sample (default) | local | s3  -- only changes the banner and defaults
-  DASH_ROOT          one folder holding queue/, curated/ and sharing/
+  DASH_ROOT          one folder holding queue/, metrics/, curated/ and sharing/
   DASH_QUEUE_DIR     override the queue folder
+  DASH_METRICS_DIR   override the metrics folder
   DASH_CURATED_DIR   override the curated folder
   DASH_SHARING_DIR   override the sharing folder
 """
@@ -44,10 +47,11 @@ def _dir(env: str, sub: str) -> str:
 
 
 QUEUE_DIR = _dir("DASH_QUEUE_DIR", "queue")
+METRICS_DIR = _dir("DASH_METRICS_DIR", "metrics")
 CURATED_DIR = _dir("DASH_CURATED_DIR", "curated")
 SHARING_DIR = _dir("DASH_SHARING_DIR", "sharing")
 
-USES_S3 = any(p.startswith("s3://") for p in (QUEUE_DIR, CURATED_DIR, SHARING_DIR))
+USES_S3 = any(p.startswith("s3://") for p in (QUEUE_DIR, METRICS_DIR, CURATED_DIR, SHARING_DIR))
 CONFIGURED = bool(QUEUE_DIR and CURATED_DIR)
 
 # Colours: reference palette slots 1 and 2 (blue, orange), validated as a pair, plus

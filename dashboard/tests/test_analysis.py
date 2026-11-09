@@ -62,3 +62,20 @@ def test_uplift_table():
         "positive_accounts": [10, 10], "precision_at_k": [0.1, 0.27], "recall_at_k": [0.3, 0.8]})
     u = analysis.uplift_table(c).iloc[0]
     assert u.extra_true_positives == 5 and u.recall_uplift == pytest.approx(0.5)
+
+
+def test_model_comparison_reads_each_job_for_the_chosen_day():
+    def day(d, tp):
+        return {"date": d, "eligible": 100, "reviewed": 10, "positives": 20, "tp": tp,
+                "precision_at_k": tp / 10, "recall_at_k": tp / 20}
+    metrics = {
+        "models": {"k": 10, "results": {"gbt": {"test": [day("a", 6), day("b", 5)]},
+                                        "lr": {"test": [day("a", 4)]}}},
+        "rules": {"k": 10, "test": [day("a", 1)]},
+        "rules_tuned": None,  # a file not pulled is left out, not an error
+    }
+    out = analysis.model_comparison(metrics, "a").set_index("approach")
+    assert list(out.index) == ["Gradient-boosted trees", "Logistic regression", "Rules (label-free)"]
+    assert out.loc["Gradient-boosted trees", "precision_at_k"] == 0.6
+    assert out.loc["Rules (label-free)", "recall_at_k"] == 0.05
+    assert list(analysis.model_comparison(metrics, "b").approach) == ["Gradient-boosted trees"]

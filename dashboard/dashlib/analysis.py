@@ -80,3 +80,36 @@ def uplift_table(comparison: pd.DataFrame) -> pd.DataFrame:
     wide["extra_true_positives"] = wide["true_positives_shared"] - wide["true_positives_bank"]
     wide["recall_uplift"] = wide["recall_at_k_shared"] - wide["recall_at_k_bank"]
     return wide.sort_values("extra_true_positives", ascending=False).reset_index(drop=True)
+
+
+MODEL_ROWS = [
+    ("models", "gbt", "Gradient-boosted trees"),
+    ("models", "lr", "Logistic regression"),
+    ("rules", None, "Rules (label-free)"),
+    ("rules_tuned", None, "Best-case rules (weights tuned on validation labels)"),
+]
+
+
+def model_comparison(metrics: dict, day: str) -> pd.DataFrame:
+    """One row per BQ1 approach for one test day: Precision@K and Recall@K as each job recorded them.
+
+    ``metrics`` maps models / rules / rules_tuned to the jobs' metrics.json (None if absent).
+    The models file holds LR and GBT under ``results``; the rules files hold ``test`` directly.
+    """
+    rows = []
+    for source, family, label in MODEL_ROWS:
+        doc = metrics.get(source)
+        if not doc:
+            continue
+        block = doc.get("results", {}).get(family) if family else doc
+        if not block:
+            continue
+        hit = [d for d in block.get("test", []) if d.get("date") == day]
+        if not hit:
+            continue
+        d = hit[0]
+        rows.append({"approach": label, "k": doc.get("k"), "reviewed": d["reviewed"],
+                     "eligible": d["eligible"], "positives": d["positives"], "true_positives": d["tp"],
+                     "precision_at_k": d["precision_at_k"], "recall_at_k": d["recall_at_k"]})
+    return pd.DataFrame(rows, columns=["approach", "k", "reviewed", "eligible", "positives",
+                                       "true_positives", "precision_at_k", "recall_at_k"])

@@ -6,7 +6,8 @@ is real IBM AML data and none of the numbers mean anything about the real model.
     python scripts/make_sample_data.py            # writes ../sample_data
 
 Layout written (mirrors the real zones):
-    sample_data/queue/     accounts.csv, transfers.parquet, ranking.json, evaluation.json
+    sample_data/queue/     date=<day>/accounts.csv, ranking.json, _SUCCESS   (the BQ1 queue)
+    sample_data/metrics/   models.json, rules.json, rules_tuned.json          (synthetic numbers)
     sample_data/curated/   transfers/date=*/, transfer_labels/date=*/, rings/
     sample_data/sharing/   comparison.csv   (synthetic numbers)
 """
@@ -24,8 +25,11 @@ import pyarrow.parquet as pq
 
 SEED = 459
 SHA = "sample"
-DAYS = pd.to_datetime(["2022-09-12", "2022-09-13", "2022-09-14"])
-SCORED_DAY = "2022-09-14"
+DAYS = pd.to_datetime(["2022-09-14", "2022-09-15", "2022-09-16"])
+SCORED_DAYS = ["2022-09-15", "2022-09-16"]
+MODEL = "sample-bq1"
+# The reason features, all ones the account's own bank can see; "high" is the unusual side.
+REASON_FEATURES = ["fan_in", "fan_out", "cp_banks", "usd_out", "max_usd"]
 K = 150
 N_BANKS, ACCOUNTS_PER_BANK = 25, 70
 N_BACKGROUND, N_RINGS = 36_000, 90
@@ -147,51 +151,90 @@ def main(out: Path) -> None:
     (cur_dir / "rings").mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pandas(ring_out, preserve_index=False), cur_dir / "rings" / "part-0.parquet")
 
-    # ---- scoring run for the scored day: edge scores -> account scores -> ranking
-    day_rows = allx[allx.date == SCORED_DAY].copy()
-    laundering = day_rows.laundering_mark.to_numpy() == 1
-    noisy_clean = rng.random(len(day_rows)) < 0.03  # a few false alarms, like any model
-    score = np.where(laundering, rng.beta(5, 2, len(day_rows)),
-                     np.where(noisy_clean, rng.beta(4, 3, len(day_rows)), rng.beta(1, 25, len(day_rows))))
-    day_rows["risk_score"] = score.astype("float32")
-    queue_dir = out / "queue"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.table({
-        "transfer_id": day_rows.transfer_id, "risk_score": day_rows.risk_score,
-        "model_version": ["sample-gin"] * len(day_rows), "cutoff": ["2022-09-15"] * len(day_rows)}),
-        queue_dir / "transfers.parquet")
+    # ---- BQ1 queues, one per scored day: account-day features -> score -> ranking + reasons
+    queue_root = out / "queue"
+    metrics = {"gbt": [], "lr": [], "rules": [], "rules_tuned": []}
+    for scored_day in SCORED_DAYS:
+        cutoff = str((pd.Timestamp(scored_day) + pd.Timedelta(days=1)).date())
+        day_rows = allx[(allx.date == scored_day)
+                        & ~((allx.sender_bank_id == allx.receiver_bank_id)
+                            & (allx.sender_account_number == allx.receiver_account_number))]
+        out_side = day_rows.assign(bank_id=day_rows.sender_bank_id, account_id=day_rows.sender_account_number,
+                                   cp=day_rows.receiver_bank_id + ":" + day_rows.receiver_account_number,
+                                   cp_bank=day_rows.receiver_bank_id, out=day_rows.amount_paid)
+        in_side = day_rows.assign(bank_id=day_rows.receiver_bank_id, account_id=day_rows.receiver_account_number,
+                                  cp=day_rows.sender_bank_id + ":" + day_rows.sender_account_number,
+                                  cp_bank=day_rows.sender_bank_id, out=0.0)
+        inc = pd.concat([out_side, in_side])
+        keys = ["bank_id", "account_id"]
+        feats = inc.groupby(keys).agg(
+            cp_banks=("cp_bank", "nunique"), usd_out=("out", "sum"), max_usd=("amount_paid", "max"),
+            laundering=("laundering_mark", "max")).reset_index()
+        feats = feats.merge(out_side.groupby(keys).cp.nunique().rename("fan_out").reset_index(), on=keys, how="left")
+        feats = feats.merge(in_side.groupby(keys).cp.nunique().rename("fan_in").reset_index(), on=keys, how="left")
+        feats[["fan_in", "fan_out"]] = feats[["fan_in", "fan_out"]].fillna(0).astype(int)
+        feats["usd_out"] = feats["usd_out"].round(2)
+        eligible = len(feats)
+        positive = feats.laundering.to_numpy() == 1
 
-    inc = pd.concat([
-        day_rows.assign(bank_id=day_rows.sender_bank_id, account_id=day_rows.sender_account_number),
-        day_rows.assign(bank_id=day_rows.receiver_bank_id, account_id=day_rows.receiver_account_number),
-    ])
-    inc["is_self"] = (inc.sender_bank_id == inc.receiver_bank_id) & (inc.sender_account_number == inc.receiver_account_number)
-    eligible = inc[~inc.is_self][["bank_id", "account_id"]].drop_duplicates()
-    best = (inc.sort_values(["risk_score", "source_row_id"], ascending=[False, True])
-            .drop_duplicates(["bank_id", "account_id"]))
-    acc = eligible.merge(best[["bank_id", "account_id", "risk_score", "transfer_id"]], on=["bank_id", "account_id"])
-    acc = acc.sort_values(["risk_score", "bank_id", "account_id"], ascending=[False, True, True]).reset_index(drop=True)
-    acc["node_id"] = acc.index  # stand-in for the model's node map
-    top = acc.head(K).copy()
-    queue = pd.DataFrame({
-        "bank_id": top.bank_id, "account_id": top.account_id, "node_id": top.node_id,
-        "score": top.risk_score.astype(float), "rank": np.arange(1, len(top) + 1),
-        "supporting_transfer_id": top.transfer_id, "model_version": "sample-gin",
-        "window_start": SCORED_DAY, "cutoff": "2022-09-15"})
-    queue.to_csv(queue_dir / "accounts.csv", index=False)
+        # SYNTHETIC scores: launderers tend to score high, a few clean accounts too
+        noisy_clean = rng.random(eligible) < 0.03
+        feats["score"] = np.where(positive, rng.beta(5, 2, eligible),
+                                  np.where(noisy_clean, rng.beta(4, 3, eligible), rng.beta(1, 25, eligible)))
+        feats = feats.sort_values(["score", "bank_id", "account_id"], ascending=[False, True, True]).reset_index(drop=True)
+        top = feats.head(K).copy()
 
-    pos_tx = inc[(inc.laundering_mark == 1) & (~inc.is_self)][["bank_id", "account_id"]].drop_duplicates()
-    positives = eligible.merge(pos_tx, on=["bank_id", "account_id"])
-    tp = len(top.merge(positives, on=["bank_id", "account_id"]))
-    (queue_dir / "ranking.json").write_text(json.dumps({
-        "model_version": "sample-gin", "start": SCORED_DAY, "cutoff": "2022-09-15", "daily": True,
-        "requested_k": K, "returned": len(top), "eligible_accounts": len(eligible), "cohort_bank": None,
-        "aggregation": "maximum incident transfer score, including self-transfers",
-        "eligibility": "non-self transfer that day"}, indent=2))
-    (queue_dir / "evaluation.json").write_text(json.dumps({
-        "model_version": "sample-gin", "start": SCORED_DAY, "cutoff": "2022-09-15", "daily": True, "k": K,
-        "reviewed": len(top), "eligible": len(eligible), "positive_accounts": len(positives),
-        "true_positives": tp, "precision_at_k": tp / len(top), "recall_at_k": tp / len(positives)}, indent=2))
+        # reasons as the score job writes them: the account's three most extreme features that day
+        shares = pd.DataFrame({f: feats[f].rank(method="max", ascending=False) / eligible for f in REASON_FEATURES})
+
+        def reasons(i):
+            picked = sorted((shares.at[i, f], f) for f in REASON_FEATURES)[:3]
+            out_ = []
+            for share, f in picked:
+                v = float(feats.at[i, f])
+                shown = str(int(v)) if v.is_integer() else f"{v:.2f}"
+                out_.append(f"{f} in top {share * 100:.2g}% ({shown})")
+            return out_
+
+        rows = [reasons(i) for i in top.index]
+        queue = pd.DataFrame({
+            "rank": np.arange(1, len(top) + 1), "bank_id": top.bank_id, "account_id": top.account_id,
+            "score": top.score.astype(float), "model_version": MODEL, "window_start": scored_day, "cutoff": cutoff,
+            "reason_1": [r[0] for r in rows], "reason_2": [r[1] for r in rows], "reason_3": [r[2] for r in rows]})
+        day_dir = queue_root / f"date={scored_day}"
+        day_dir.mkdir(parents=True, exist_ok=True)
+        queue.to_csv(day_dir / "accounts.csv", index=False)
+        (day_dir / "ranking.json").write_text(json.dumps({
+            "k": K, "date": scored_day, "window_start": scored_day, "cutoff": cutoff, "eligible": eligible,
+            "reviewed": len(top), "model": f"sample://models/bq1/{MODEL}", "model_version": MODEL,
+            "reasons": "SYNTHETIC. Reasons are descriptive flags, not model attributions: the account's most "
+                       "extreme features that day among the eligible accounts.",
+            "score": "SYNTHETIC. score is a ranking value, not a probability.",
+            "order": "score descending, then bank_id, then account_number"}, indent=2))
+        (day_dir / "_SUCCESS").write_text("")
+
+        # SYNTHETIC evaluation, measured on the sample labels: the queue, and three weaker rankings
+        n_pos = int(positive.sum())
+
+        def measured(order_by):
+            tp = int(feats.loc[order_by.head(K).index, "laundering"].sum())
+            return {"date": scored_day, "eligible": eligible, "reviewed": min(K, eligible), "positives": n_pos,
+                    "tp": tp, "precision_at_k": tp / min(K, eligible), "recall_at_k": tp / n_pos}
+
+        metrics["gbt"].append(measured(feats))
+        for name, noise in (("lr", 0.25), ("rules_tuned", 0.45), ("rules", 0.7)):
+            alt = feats.score + rng.normal(0, noise, eligible)
+            metrics[name].append(measured(feats.loc[alt.sort_values(ascending=False).index]))
+
+    note = "SYNTHETIC sample data from scripts/make_sample_data.py; the numbers mean nothing."
+    metrics_dir = out / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_dir / "models.json").write_text(json.dumps({
+        "note": note, "k": K, "winner": "gbt", "runner_up": "lr",
+        "results": {"gbt": {"test": metrics["gbt"]}, "lr": {"test": metrics["lr"]}}}, indent=2))
+    for name, file in (("rules", "rules.json"), ("rules_tuned", "rules_tuned.json")):
+        (metrics_dir / file).write_text(json.dumps({"note": note, "k": K, "test": metrics[name]}, indent=2))
+    tp, n_pos = metrics["gbt"][0]["tp"], metrics["gbt"][0]["positives"]
 
     # ---- BQ2 comparison: SYNTHETIC numbers in the format the real experiment should deliver
     share = out / "sharing"
@@ -208,7 +251,8 @@ def main(out: Path) -> None:
                          "precision_at_k": t / k_b, "recall_at_k": t / pos_b})
     pd.DataFrame(rows).to_csv(share / "comparison.csv", index=False)
     print(f"wrote {out}  ({len(allx):,} transfers, {len(ring_out):,} ring transfers, "
-          f"{N_RINGS} rings, queue of {len(top)}, precision@K {tp / len(top):.2f})")
+          f"{N_RINGS} rings, queues of {K} for {', '.join(SCORED_DAYS)}, "
+          f"precision@K {tp / K:.2f} on the first day)")
 
 
 if __name__ == "__main__":

@@ -1,64 +1,58 @@
 """Business question 1: which accounts should investigators review first?"""
-import pandas as pd
 import streamlit as st
 
-from dashlib import charts, config, data, ui
-
-# Published in docs/scoring-validation.md (retrospective, simulated data). Used only when the
-# scoring run's own evaluation.json is not available.
-DOCUMENTED = {
-    "2022-09-14": dict(true_positives=822, positive_accounts=3524, eligible=900182),
-    "2022-09-15": dict(true_positives=807, positive_accounts=3632, eligible=899565),
-    "2022-09-16": dict(true_positives=723, positive_accounts=3757, eligible=1421148),
-}
+from dashlib import analysis, charts, data, ui
 
 ui.banner()
 ui.require_config()
 st.title("Which accounts should investigators review first?")
 
 try:
-    queue = data.load_queue()
+    days = data.queue_days()
 except data.DataMissing as err:
     ui.stop_missing(err)
-meta = data.load_ranking_meta()
-evaluation = data.load_evaluation()
+
+# ---- filters (the day is shared with the investigation page)
+with st.sidebar:
+    st.header("Filters")
+    saved = st.session_state.get("day")
+    day = st.selectbox("Queue day", days, index=days.index(saved) if saved in days else 0,
+                       help="Each day has its own queue, scored from that day's account features.")
+    st.session_state["day"] = day
+
+try:
+    queue = data.load_queue(day)
+except data.DataMissing as err:
+    ui.stop_missing(err)
+meta = data.load_ranking_meta(day)
+comparison = analysis.model_comparison(data.load_metrics(), day)
+gbt = comparison[comparison.approach == "Gradient-boosted trees"]
 
 # ---- headline numbers
-window = str(queue["window_start"].iloc[0])[:10]
-k = int(meta.get("requested_k", len(queue)))
-source_note = None
-if evaluation is None and window in DOCUMENTED and not config.IS_SAMPLE:
-    d = DOCUMENTED[window]
-    evaluation = dict(d, k=k, reviewed=k, precision_at_k=d["true_positives"] / k,
-                      recall_at_k=d["true_positives"] / d["positive_accounts"])
-    source_note = "Precision and recall are the figures recorded in `docs/scoring-validation.md` for this day."
-
+k = int(meta.get("k", len(queue)))
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Accounts to review", f"{len(queue):,}", help="The daily review budget (K) the scoring run was given.")
-c2.metric("Scoring day", window)
-if evaluation:
-    c3.metric(f"Precision @ {k:,}", ui.pct(evaluation["precision_at_k"], 1),
+c2.metric("Scoring day", day)
+if len(gbt):
+    c3.metric(f"Precision @ {k:,}", ui.pct(gbt.precision_at_k.iloc[0], 1),
               help="Of the accounts in the queue, the share that really took part in a laundering transfer that day.")
-    c4.metric(f"Recall @ {k:,}", ui.pct(evaluation["recall_at_k"], 1),
+    c4.metric(f"Recall @ {k:,}", ui.pct(gbt.recall_at_k.iloc[0], 1),
               help="Of all accounts that took part in laundering that day, the share the queue catches.")
 else:
     c3.metric("Precision", "not published")
     c4.metric("Recall", "not published")
-if evaluation:
-    elig = evaluation.get("eligible")
-    st.caption(
-        f"The review budget covers {k:,} of {elig:,} eligible accounts that day. " if elig else ""
-        "Scores rank accounts; they are not calibrated probabilities. These are retrospective results on "
-        "simulated data, not a claim about real-world accuracy." + (f" {source_note}" if source_note else ""))
-else:
-    st.caption("No evaluation file for this run. Produce one with `python -m scoring.pipeline evaluate` "
-               "and place `evaluation.json` next to `accounts.csv`.")
+elig = meta.get("eligible")
+st.caption(
+    (f"The review budget covers {k:,} of {elig:,} eligible accounts that day. " if isinstance(elig, int) else "")
+    + "The model is gradient-boosted trees trained on EMR, using only what the account's own bank can see. "
+    "Scores rank accounts; they are not probabilities. These are retrospective results on simulated data, "
+    "not a claim about real-world accuracy.")
 
-# ---- filters
 with st.sidebar:
-    st.header("Filters")
     banks = sorted(queue["bank_id"].unique())
-    chosen = st.multiselect("Bank", banks, placeholder="All banks")
+    chosen = st.multiselect("Bank", banks, placeholder="All banks",
+                            help="One bank's slice of the pooled queue: the queue ranks every bank's accounts "
+                                 "together, and this keeps only the chosen banks' rows.")
     top_n = st.slider("Show top", min_value=10, max_value=len(queue), value=min(100, len(queue)), step=10 if len(queue) > 50 else 1)
     show_rings = st.toggle("Show known ring pattern (ground truth)", value=True,
                            help="From the dataset's patterns file. Evaluation only: the model never sees it.")
@@ -77,8 +71,12 @@ if show_rings:
 
 # ---- the queue
 st.subheader("Ranked queue")
-cols = ["rank", "bank_id", "account_id", "score_exact"] + (["ring_pattern"] if show_rings else []) + ["supporting_transfer_id"]
+if chosen:
+    st.caption(f"Bank {', '.join(chosen)}: one bank's slice of the pooled queue. Ranks are positions in the "
+               "queue across all banks.")
+cols = ["rank", "bank_id", "account_id", "score_exact", "reason_1", "reason_2", "reason_3"] + (["ring_pattern"] if show_rings else [])
 table = view[cols].reset_index(drop=True)
+reason_help = "Descriptive flags, not model attributions: the account's most extreme features that day."
 event = st.dataframe(
     table, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="queue_table",
     column_config={
@@ -88,9 +86,11 @@ event = st.dataframe(
         "score_exact": st.column_config.TextColumn(
             "Risk score (exact)", width="medium",
             help="The model's score at full precision, as written in accounts.csv. Rank order is the ranking; "
-                 "equal scores are ordered by the scoring run's tie-break."),
+                 "equal scores are ordered by bank, then account."),
+        "reason_1": st.column_config.TextColumn("Reason 1", help=reason_help),
+        "reason_2": st.column_config.TextColumn("Reason 2", help=reason_help),
+        "reason_3": st.column_config.TextColumn("Reason 3", help=reason_help),
         "ring_pattern": st.column_config.TextColumn("Known ring pattern (ground truth)"),
-        "supporting_transfer_id": st.column_config.TextColumn("Supporting transfer", help="The highest-scoring transfer behind the account's score."),
     })
 selected = event.selection.rows
 if selected:
@@ -103,6 +103,26 @@ if selected:
 else:
     st.caption("Select a row to investigate that account's transfers.")
 
+# ---- how the queue compares
+st.subheader(f"How the queue compares, {day}")
+if comparison.empty:
+    st.caption("No metrics files found (`metrics/models.json`, `rules.json`, `rules_tuned.json`); see the README.")
+else:
+    st.dataframe(
+        comparison[["approach", "precision_at_k", "recall_at_k", "true_positives", "positives"]],
+        hide_index=True, width="stretch",
+        column_config={
+            "approach": st.column_config.TextColumn("Approach"),
+            "precision_at_k": st.column_config.NumberColumn(f"Precision @ {k:,}", format="percent"),
+            "recall_at_k": st.column_config.NumberColumn(f"Recall @ {k:,}", format="percent"),
+            "true_positives": st.column_config.NumberColumn("Launderers found"),
+            "positives": st.column_config.NumberColumn("Launderers that day"),
+        })
+    st.caption(
+        f"Every approach reviews the same {k:,} accounts a day from the same eligible accounts. The rules use fixed "
+        "thresholds from the training days; the best-case rules weigh the same rules using the validation days' "
+        "labels, so they are an upper bound for hand-tuned rules. The test days were never used to choose anything.")
+
 # ---- workload
 st.subheader("Where the review work sits")
 st.plotly_chart(charts.queue_by_bank(view if len(view) else queue), width="stretch")
@@ -111,13 +131,15 @@ with st.expander("Table view"):
                  hide_index=True, width="stretch")
 
 with st.expander("How this queue was built"):
-    eligible_accounts = meta.get("eligible_accounts")
     lines = [
-        f"- **Model:** {queue['model_version'].iloc[0]} (frozen graph neural network, not retrained)",
-        f"- **Window:** {window}, midnight to midnight; cutoff {str(queue['cutoff'].iloc[0])[:10]}",
-        f"- **Account score:** {meta.get('aggregation', 'maximum incident transfer score')}",
-        f"- **Eligibility:** {meta.get('eligibility', 'a non-self transfer that day')}",
+        f"- **Model:** {queue['model_version'].iloc[0]} (gradient-boosted trees trained on EMR, using only what "
+        "the account's own bank can see)",
+        f"- **Window:** {day}, midnight to midnight; cutoff {str(queue['cutoff'].iloc[0])[:10]}",
+        f"- **Order:** {meta.get('order', 'score descending, then bank_id, then account_number')}",
+        "- **Eligibility:** an account with a non-self transfer that day",
+        f"- **Reasons:** {meta.get('reasons', 'descriptive flags, not model attributions')}",
+        f"- **Score:** {meta.get('score', 'a ranking value, not a probability')}",
     ]
-    if isinstance(eligible_accounts, int):
-        lines.append(f"- **Eligible accounts:** {eligible_accounts:,}")
+    if isinstance(elig, int):
+        lines.append(f"- **Eligible accounts:** {elig:,}")
     st.write("\n".join(lines))
