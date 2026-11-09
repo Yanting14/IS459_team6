@@ -4,8 +4,9 @@ Runs as a Spark job on EMR Serverless, and locally in tests. Locations may be S3
 local folders. Every mode refuses an output that already exists and writes `_SUCCESS` last.
 
 Modes:
-  train     fit logistic regression and gradient-boosted trees, pick the winner on the
-            validation days, report both on the test days, save both models
+  train     fit logistic regression and gradient-boosted trees on the bank-visible features,
+            pick the winner on the validation days, report both on the test days, save both
+            models
   baseline  hand-written AML rules on the same features, thresholds from training days only
   baseline-tuned
             the same rules, weighted 0-3 each to do best on the validation days' labels: a
@@ -50,11 +51,16 @@ FEATURES = ["fan_in", "fan_out", "cp_banks", "cross_bank_share", "cp_max_fan_in"
             "cp_max_fan_out", "usd_in", "usd_out", "max_usd", "pass_through", "hrs_in_to_out",
             "max_txn_per_day", "active_days", "n_pay_formats", "ach_share", "n_currencies",
             "history_days"]
+# The model sees only what the account's own bank can compute from its accounts' transfers.
+# cp_max_fan_in and cp_max_fan_out count the counterparties' other transfers, which sit
+# at other banks, so BQ1 leaves them out. prepare.py still writes them.
+NOT_BANK_VISIBLE = ("cp_max_fan_in", "cp_max_fan_out")
+MODEL_FEATURES = [f for f in FEATURES if f not in NOT_BANK_VISIBLE]
 
 MISSING = "hrs_in_to_out_missing"
 # Counts and USD amounts are heavy-tailed; logistic regression sees them through log1p.
-LOGGED = ["fan_in", "fan_out", "cp_banks", "cp_max_fan_in", "cp_max_fan_out", "usd_in",
-          "usd_out", "max_usd", "max_txn_per_day", "n_pay_formats", "n_currencies"]
+LOGGED = ["fan_in", "fan_out", "cp_banks", "usd_in", "usd_out", "max_usd", "max_txn_per_day",
+          "n_pay_formats", "n_currencies"]
 
 GRID = [("lr", {"regParam": r}) for r in (0.0, 0.01, 0.1)] + \
        [("gbt", {"maxDepth": d, "maxIter": i}) for d in (3, 5) for i in (50, 100)]
@@ -65,7 +71,7 @@ SELECTION_RULE = ("Each model family's setting, and then the overall winner, is 
 # Which way a feature's value is unusual when it is given as a reason. Never-reasons
 # describe how long an account has been seen, not what it did.
 HIGH, LOW, NEVER = "high", "low", "never"
-REASON_DIRECTION = {f: HIGH for f in FEATURES}
+REASON_DIRECTION = {f: HIGH for f in MODEL_FEATURES}
 REASON_DIRECTION.update(hrs_in_to_out=LOW, history_days=NEVER, active_days=NEVER)
 REASONS_NOTE = ("Reasons are descriptive flags, not model attributions: each of the account's "
                 "features is placed against that day's eligible account-days, and the three "
@@ -150,7 +156,7 @@ def read_table(spark: SparkSession, curated: str, table: str, days: list[str]):
 
 def labelled(spark: SparkSession, curated: str, days: list[str]):
     """Features joined to labels, after checking the two tables share one grain exactly."""
-    features = read_table(spark, curated, "features", days).select(*FEATURE_KEYS, *FEATURES)
+    features = read_table(spark, curated, "features", days).select(*FEATURE_KEYS, *MODEL_FEATURES)
     labels = read_table(spark, curated, "labels", days).select(*FEATURE_KEYS, LABEL)
     joined = features.join(labels, FEATURE_KEYS, "inner").cache()
     n_features, n_labels, n_joined = features.count(), labels.count(), joined.count()
@@ -173,25 +179,25 @@ def sample_negatives(df, fraction: float, seed: int):
 # --- Models --------------------------------------------------------------------
 
 def model_inputs() -> list[str]:
-    inputs = [f"{f}_in" for f in FEATURES] + [MISSING]
+    inputs = [f"{f}_in" for f in MODEL_FEATURES] + [MISSING]
     assert not any(LABEL in c or "label" in c.lower() for c in inputs)
     return inputs
 
 
 def build_pipeline(family: str, params: dict, seed: int) -> Pipeline:
-    cast = ", ".join(f"CAST({f} AS DOUBLE) AS {f}_raw" for f in FEATURES)
+    cast = ", ".join(f"CAST({f} AS DOUBLE) AS {f}_raw" for f in MODEL_FEATURES)
     stages = [
         SQLTransformer(statement=f"SELECT *, {cast}, "
                                  f"CAST(hrs_in_to_out IS NULL AS DOUBLE) AS {MISSING} "
                                  f"FROM __THIS__"),
-        Imputer(strategy="median", inputCols=[f"{f}_raw" for f in FEATURES],
-                outputCols=[f"{f}_imp" for f in FEATURES]),
+        Imputer(strategy="median", inputCols=[f"{f}_raw" for f in MODEL_FEATURES],
+                outputCols=[f"{f}_imp" for f in MODEL_FEATURES]),
     ]
     if family == "lr":
         moved = ", ".join(f"LOG1P({f}_imp) AS {f}_in" if f in LOGGED else f"{f}_imp AS {f}_in"
-                          for f in FEATURES)
+                          for f in MODEL_FEATURES)
     else:
-        moved = ", ".join(f"{f}_imp AS {f}_in" for f in FEATURES)
+        moved = ", ".join(f"{f}_imp AS {f}_in" for f in MODEL_FEATURES)
     stages.append(SQLTransformer(statement=f"SELECT *, {moved} FROM __THIS__"))
     stages.append(VectorAssembler(inputCols=model_inputs(), outputCol="assembled"))
     if family == "lr":
@@ -216,8 +222,8 @@ positive_class = F.udf(lambda v: float(v[1]), T.DoubleType())
 def with_score(model: PipelineModel, df):
     return (model.transform(df)
             .withColumn("score", positive_class("probability"))
-            .select(*FEATURE_KEYS, *FEATURES, *([LABEL] if LABEL in df.columns else []),
-                    "score"))
+            .select(*FEATURE_KEYS, *MODEL_FEATURES,
+                    *([LABEL] if LABEL in df.columns else []), "score"))
 
 
 def importances(family: str, model: PipelineModel) -> dict:
@@ -498,7 +504,8 @@ def score(spark: SparkSession, args) -> dict:
     version = model_dir.rsplit("/", 1)[-1]
 
     # No labels are read in this mode.
-    day = read_table(spark, args.curated, "features", [args.date]).select(*FEATURE_KEYS, *FEATURES)
+    day = (read_table(spark, args.curated, "features", [args.date])
+           .select(*FEATURE_KEYS, *MODEL_FEATURES))
     scored = with_score(model, day)
     for f, d in REASON_DIRECTION.items():
         if d == NEVER:

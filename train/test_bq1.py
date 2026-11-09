@@ -150,8 +150,33 @@ def test_no_label_column_reaches_the_assembler(family):
     pipeline = bq1.build_pipeline(family, {}, seed=1)
     assembler = next(s for s in pipeline.getStages() if isinstance(s, bq1.VectorAssembler))
     inputs = assembler.getInputCols()
-    assert inputs == [f"{f}_in" for f in bq1.FEATURES] + [bq1.MISSING]
+    assert inputs == [f"{f}_in" for f in bq1.MODEL_FEATURES] + [bq1.MISSING]
     assert not any("label" in c.lower() or "launder" in c.lower() for c in inputs)
+
+
+CP_MAX = ("cp_max_fan_in", "cp_max_fan_out")
+
+
+@pytest.mark.parametrize("family", ["lr", "gbt"])
+def test_features_other_banks_hold_never_reach_the_assembler(family):
+    assert set(CP_MAX) <= set(bq1.FEATURES)
+    assert set(bq1.NOT_BANK_VISIBLE) == set(CP_MAX)
+    assert bq1.MODEL_FEATURES == [f for f in bq1.FEATURES if f not in CP_MAX]
+    pipeline = bq1.build_pipeline(family, {}, seed=1)
+    assembler = next(s for s in pipeline.getStages() if isinstance(s, bq1.VectorAssembler))
+    assert not any(c.startswith(CP_MAX) for c in assembler.getInputCols())
+
+
+def test_features_other_banks_hold_are_never_a_reason():
+    assert not set(CP_MAX) & set(bq1.REASON_DIRECTION)
+    row = {}
+    for f in bq1.FEATURES:
+        row[f] = 1
+        row[f"{f}_share"] = 50
+    # They would be the most extreme of all if they were looked at.
+    row.update(cp_max_fan_in=900, cp_max_fan_in_share=0, cp_max_fan_out=900,
+               cp_max_fan_out_share=0)
+    assert not any(r.startswith(CP_MAX) for r in bq1.reasons(row, eligible=100))
 
 
 # --- Metrics -------------------------------------------------------------------
@@ -214,6 +239,7 @@ def test_the_saved_model_assembles_no_label(trained):
     out, _ = trained
     inputs = bq1.assembler_inputs(bq1.PipelineModel.load(str(out / "model")))
     assert bq1.LABEL not in inputs and not any("label" in c.lower() for c in inputs)
+    assert not any(c.startswith(CP_MAX) for c in inputs)
 
 
 def test_train_refuses_an_existing_output(spark, curated, trained):
@@ -315,6 +341,7 @@ def test_score_writes_a_queue_without_reading_labels(unlabelled, trained, tmp_pa
     assert all(r["model_version"] == "v1" and r["window_start"] == "2022-09-05"
                and r["cutoff"] == "2022-09-06" for r in queue)
     assert all(r["reason_1"] and r["reason_2"] and r["reason_3"] for r in queue)
+    assert not any(r[f"reason_{i}"].startswith(CP_MAX) for r in queue for i in (1, 2, 3))
     assert ranking["eligible"] == ACCOUNTS and ranking["reviewed"] == 3
     assert "not model attributions" in ranking["reasons"]
     assert "not a probability" in ranking["score"]
@@ -347,7 +374,7 @@ def test_score_refuses_an_unfinished_model(unlabelled, tmp_path):
 # --- Reasons -------------------------------------------------------------------
 
 def test_every_feature_has_a_reason_direction():
-    assert set(bq1.REASON_DIRECTION) == set(bq1.FEATURES)
+    assert set(bq1.REASON_DIRECTION) == set(bq1.MODEL_FEATURES)
     assert bq1.REASON_DIRECTION["hrs_in_to_out"] == bq1.LOW
     assert bq1.REASON_DIRECTION["history_days"] == bq1.NEVER
     assert bq1.REASON_DIRECTION["active_days"] == bq1.NEVER
@@ -355,7 +382,7 @@ def test_every_feature_has_a_reason_direction():
 
 def test_a_low_hrs_in_to_out_is_a_reason_and_history_never_is():
     row = {}
-    for f in bq1.FEATURES:
+    for f in bq1.MODEL_FEATURES:
         row[f] = 1
         row[f"{f}_share"] = 90
     row.update(hrs_in_to_out=0.25, hrs_in_to_out_share=1, fan_in=412, fan_in_share=2,
@@ -369,7 +396,7 @@ def test_a_low_hrs_in_to_out_is_a_reason_and_history_never_is():
 
 def test_a_missing_value_is_never_a_reason():
     row = {}
-    for f in bq1.FEATURES:
+    for f in bq1.MODEL_FEATURES:
         row[f] = 1
         row[f"{f}_share"] = 50
     row.update(hrs_in_to_out=None, hrs_in_to_out_share=None)
