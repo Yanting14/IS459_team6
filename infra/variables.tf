@@ -146,3 +146,65 @@ variable "bq1_k" {
     error_message = "bq1_k must be a positive integer."
   }
 }
+
+variable "athena_queue_run" {
+  description = "BQ1 queue run (the Step Functions execution name) under s3://<gold>/bq1/queue/ that the queue_files table reads."
+  type        = string
+  default     = "bq1-bankvis-20261109"
+}
+
+variable "athena_date_range" {
+  description = "Days the date partition is projected over, start and end."
+  type        = string
+  default     = "2022-09-01,2022-09-30"
+}
+
+variable "athena_scan_limit_gib" {
+  description = "Per-query scan limit of the Athena workgroup; the whole transfers table is about 1.4 GB."
+  type        = number
+  default     = 10
+}
+
+variable "athena_create_views" {
+  description = "Create the two Athena views by running 05_views.sql from the machine that applies (needs python3, boto3, AWS credentials)."
+  type        = bool
+  default     = true
+}
+
+variable "enable_bq2" {
+  description = "Run the BQ2 bank-vs-shared comparison after Score. Needs a scoring image that contains bq2/ (rebuilt after this was added)."
+  type        = bool
+  default     = false
+}
+
+variable "bq2_dates" {
+  description = "Dataset days BQ2 compares; a historical replay, not the wall-clock date."
+  type        = list(string)
+  default     = ["2022-09-15", "2022-09-16"]
+  validation {
+    condition     = length(var.bq2_dates) > 0 && alltrue([for d in var.bq2_dates : can(regex("^\\d{4}-\\d{2}-\\d{2}$", d))])
+    error_message = "bq2_dates must list at least one YYYY-MM-DD day."
+  }
+}
+
+variable "bq2_banks" {
+  description = "Banks compared in BQ2: the 16 in bq2/runs/banks_final.csv (at least 10 positive accounts on each of 15 and 16 Sep)."
+  type        = list(string)
+  default     = ["000", "012", "020", "011", "02310", "00214", "01213", "003", "025", "02597", "001", "006", "01208", "01831", "027", "029"]
+  validation {
+    condition     = length(var.bq2_banks) > 0 && alltrue([for b in var.bq2_banks : can(regex("^[0-9A-Za-z]+$", b))])
+    error_message = "bq2_banks must list at least one bank id (letters and digits)."
+  }
+}
+
+variable "bq2_ratio" {
+  description = "BQ2 review budget as a share of each bank's eligible accounts (bq2.sharing compare --ratio)."
+  type        = number
+  default     = 0.0011
+}
+
+variable "bq2_floor" {
+  description = "Smallest BQ2 review budget per bank and day (bq2.sharing compare --floor)."
+  type        = number
+  default     = 10
+}

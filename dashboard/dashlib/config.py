@@ -22,8 +22,9 @@ Environment variables
   DASH_ATHENA_WORKGROUP  Athena workgroup (default is459-team6)
   DASH_ATHENA_DATABASE   Glue database holding the tables (default is459_team6)
   DASH_ATHENA_REGION     default us-east-1
-  DASH_QUEUE_URI     athena only: the S3 folder of the queue run the queue table points at, used for
-                     ranking.json (a small JSON file, read directly from S3)
+  DASH_QUEUE_URI     athena only, optional: the S3 folder of the queue run, used for ranking.json (a small
+                     JSON file, read directly from S3). By default it is read from the Glue table
+                     queue_files, which each pipeline run re-points at its own queue.
   DASH_RULES_URI / DASH_RULES_TUNED_URI   athena only: the two rules baselines' output folders
   DASH_ROOT          one folder holding queue/, metrics/, curated/ and sharing/
   DASH_QUEUE_DIR     override the queue folder
@@ -46,7 +47,7 @@ GOLD = "s3://is459-team6-gold-207567757101"
 ATHENA_WORKGROUP = os.getenv("DASH_ATHENA_WORKGROUP", "is459-team6").strip()
 ATHENA_DATABASE = os.getenv("DASH_ATHENA_DATABASE", "is459_team6").strip()
 ATHENA_REGION = os.getenv("DASH_ATHENA_REGION", "us-east-1").strip()
-QUEUE_URI = os.getenv("DASH_QUEUE_URI", f"{GOLD}/bq1/queue/bq1-bankvis-20261109").strip().rstrip("/")
+QUEUE_URI = os.getenv("DASH_QUEUE_URI", "").strip().rstrip("/")   # empty: ask Glue (data.queue_uri)
 RULES_URI = os.getenv("DASH_RULES_URI", f"{GOLD}/bq1/baseline/t4-20261108").strip().rstrip("/")
 RULES_TUNED_URI = os.getenv("DASH_RULES_TUNED_URI", f"{GOLD}/bq1/baseline-tuned/20261109").strip().rstrip("/")
 

@@ -136,7 +136,8 @@ locals {
     BackoffRate     = 2
   }]
 
-  # Prepare -> BQ1 options -> (TrainBQ1) -> ScoreBQ1 (one job per day) -> the GIN's ScoringConfiguration.
+  # Prepare -> BQ1 options -> (TrainBQ1) -> ScoreBQ1 (one job per day) -> PointQueueTable (athena.tf)
+  # -> the GIN's ScoringConfiguration.
   # Execution input may carry {"bq1": {"retrain": true, "dates": [...], "model_version": ..., "k": ...}}.
   bq1_states = {
     BQ1Defaults = {
@@ -255,7 +256,7 @@ locals {
         }
       }
       ResultPath = null
-      Next       = "ScoringConfiguration"
+      Next       = "PointQueueTable" # athena.tf: show this run's queue in Athena
     }
   }
 }

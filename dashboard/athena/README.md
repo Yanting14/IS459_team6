@@ -13,7 +13,25 @@ query. DuckDB is used only by the offline sample mode.
 | `04_queue_table.sql` | the BQ1 review queue as a table (view `queue_accounts`). The queue and investigation pages read it |
 | `run_sql.py` | runs a `.sql` file statement by statement and prints results and data scanned |
 
-## One-time setup (Command Prompt, in the `dashboard` folder)
+## Setup: Terraform owns it
+
+`infra/athena.tf` creates the workgroup, the Glue database, the tables (`transfers`, `transfer_labels`, `rings`,
+`queue_files`, `sharing_files`) and, by running `05_views.sql`, the views `queue_accounts` and `sharing_comparison`.
+`terraform apply` is the whole setup. Curated tables follow `curated_prefix` in `infra/team.auto.tfvars.json`.
+
+The queue follows the pipeline: after ScoreBQ1, the state machine runs `ALTER TABLE queue_files` to point it at
+that execution's queue folder (`athena_queue_run` only sets where it starts, and Terraform does not point it
+back). The dashboard reads the same folder from Glue for `ranking.json`, so a new run shows up after a Streamlit
+restart with nothing to edit. `DASH_QUEUE_URI` still overrides it. The sharing table reads
+`<gold>/<curated_prefix>/sharing/`, which the pipeline's BQ2Compare step writes when `enable_bq2` is on.
+
+The views step runs `run_sql.py` on the machine that applies, so it needs `python3` with `boto3`. Set
+`athena_create_views = false` to skip it. Grant dashboard users the `athena_query_policy_arn` output policy.
+
+Files `01`, `03` and `04` remain as the readable SQL form of the same tables and for the offline tests; do not
+run them against an account where Terraform manages the tables, or the two will drift.
+
+## Old manual setup (before infra/athena.tf; kept for reference)
 
 ```
 set AWS_PROFILE=team6

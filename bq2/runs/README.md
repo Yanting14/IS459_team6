@@ -62,3 +62,13 @@ python -m bq2.sharing compare --curated <local curated prefix> --manifest bq2/ru
   `transfers.parquet`. Each day's shared run is the execution `bq2-shared-<day>`.
 - `--curated` needs `transfers/` and `transfer_labels/` for the days compared.
 - `results/jobs.tsv` lists the Batch job ids of the runs behind `results/`.
+
+## In the pipeline
+
+The steps above now also run inside the Step Functions pipeline, with the same execution ids, banks, days,
+ratio and floor (`infra/bq2.tf`): `BQ2Score` scores every view on Batch, then `BQ2Compare` runs `bq2/cloud.py`,
+which checks every receipt and each scores file's sha256 and publishes `comparison.csv` and
+`comparison_by_day.csv` to `<gold>/<curated_prefix>/sharing/`. It is off until the scoring image is rebuilt to
+contain `bq2/` (`scripts/Publish-Image.ps1 scoring <tag>`, then set `scoring_image_digest`) and `enable_bq2` is set
+to `true`. Scoring reuses a completed run with identical inputs, so the runs behind `results/` are not repeated.
+The manual steps above stay as the way to reproduce or debug one run.

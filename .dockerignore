@@ -1,7 +1,10 @@
-# Only the scoring package is needed by scoring/Dockerfile. Ingest builds use
-# their own directory as build context and are unaffected.
+# Only the scoring package and the BQ2 compare modules are needed by scoring/Dockerfile.
+# Ingest builds use their own directory as build context and are unaffected.
 **
 !scoring/
 !scoring/**
 scoring/**/__pycache__/
 scoring/test_*.py
+!bq2/__init__.py
+!bq2/sharing.py
+!bq2/cloud.py

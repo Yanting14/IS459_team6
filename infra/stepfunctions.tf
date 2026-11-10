@@ -2,8 +2,9 @@ locals {
   pipeline_definition = {
     Comment = "IS459 AML pipeline"
     StartAt = "CheckRawZone"
-    # BQ1's states are in bq1.tf; they run between Prepare and the GIN's scoring.
-    States = merge(local.bq1_states, {
+    # BQ1's states are in bq1.tf; they run between Prepare and the GIN's scoring. The Athena queue
+    # re-point is in athena.tf (after ScoreBQ1); BQ2's runs and compare are in bq2.tf (after Score).
+    States = merge(local.bq1_states, local.athena_states, local.bq2_states, {
       CheckRawZone = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -182,7 +183,7 @@ locals {
           "result_uri.$" = "States.Format('s3://${aws_s3_bucket.scoring["gold"].id}/${local.scoring_gold_prefix}/executions/{}.json', $$.Execution.Name)"
         }
         ResultPath = "$.scoring_result"
-        End        = true
+        Next       = "BQ2Configuration"
       }
     })
   }
@@ -212,7 +213,33 @@ resource "aws_iam_role_policy" "pipeline" {
       {
         Effect   = "Allow"
         Action   = "batch:SubmitJob"
-        Resource = [aws_batch_job_queue.scoring.arn, aws_batch_job_definition.scoring.arn]
+        Resource = [aws_batch_job_queue.scoring.arn, aws_batch_job_definition.scoring.arn, aws_batch_job_definition.bq2_compare.arn]
+      },
+      {
+        # PointQueueTable / PointQueueTemplate: Athena DDL that re-points queue_files.
+        Effect   = "Allow"
+        Action   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:StopQueryExecution", "athena:GetQueryResults"]
+        Resource = aws_athena_workgroup.this.arn
+      },
+      {
+        Effect = "Allow"
+        Action = ["glue:GetDatabase", "glue:GetTable", "glue:UpdateTable"]
+        Resource = [
+          "arn:aws:glue:${var.region}:${local.account_id}:catalog",
+          aws_glue_catalog_database.this.arn,
+          "arn:aws:glue:${var.region}:${local.account_id}:table/${local.athena_database}/queue_files",
+        ]
+      },
+      {
+        # Athena writes every query's result file, DDL included, to the workgroup's results folder.
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketLocation", "s3:ListBucket"]
+        Resource = aws_s3_bucket.scoring["gold"].arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
+        Resource = "${aws_s3_bucket.scoring["gold"].arn}/athena-results/*"
       },
       {
         # Job IDs are allocated at runtime; DescribeJobs has no resource scoping.
@@ -276,6 +303,10 @@ resource "aws_sfn_state_machine" "pipeline" {
     precondition {
       condition     = !var.enable_scoring || var.scoring_image_digest != ""
       error_message = "Publish the scoring image and set its immutable digest before enabling scoring."
+    }
+    precondition {
+      condition     = !var.enable_bq2 || var.enable_scoring
+      error_message = "BQ2 runs after the GIN's Score step and uses its Batch queue: enable_scoring must be true too."
     }
   }
 

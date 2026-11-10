@@ -65,6 +65,29 @@ def athena_query(sql: str) -> pd.DataFrame:
             f"Could not reach Athena ({type(err).__name__}: {err}). Check `aws sts get-caller-identity` and AWS_PROFILE.") from err
 
 
+@st.cache_resource(show_spinner=False)
+def _glue_client():
+    import boto3
+    return boto3.client("glue", region_name=config.ATHENA_REGION)
+
+
+@st.cache_data(show_spinner=False)
+def queue_uri() -> str:
+    """The S3 folder of the queue run that the Athena table ``queue_files`` reads.
+
+    Each pipeline run re-points that table at its own queue, so by default the folder is read from
+    the table itself, and ranking.json always comes from the same run as the rows. DASH_QUEUE_URI
+    overrides it."""
+    if config.QUEUE_URI:
+        return config.QUEUE_URI
+    try:
+        table = _glue_client().get_table(DatabaseName=config.ATHENA_DATABASE, Name="queue_files")["Table"]
+    except Exception as err:
+        raise DataMissing(f"Could not read the location of the Athena table `queue_files` "
+                          f"({type(err).__name__}: {err}). Set DASH_QUEUE_URI to the queue folder.") from err
+    return table["StorageDescriptor"]["Location"].rstrip("/")
+
+
 def _s3_json(uri: str) -> dict | None:
     """A small JSON file from S3, or None if it is not there."""
     m = re.fullmatch(r"s3://([^/]+)/(.+)", uri)
@@ -178,7 +201,7 @@ def _read_json(path: str) -> dict | None:
 @st.cache_data(show_spinner=False)
 def load_ranking_meta(day: str) -> dict:
     if config.USES_ATHENA:
-        return _s3_json(f"{config.QUEUE_URI}/date={day}/ranking.json") or {}
+        return _s3_json(f"{queue_uri()}/date={day}/ranking.json") or {}
     return _read_json(f"{config.QUEUE_DIR}/date={day}/ranking.json") or {}
 
 
