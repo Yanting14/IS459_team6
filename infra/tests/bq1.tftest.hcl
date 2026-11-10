@@ -31,7 +31,8 @@ mock_provider "aws" {
 mock_provider "archive" {}
 
 variables {
-  curated_prefix = "ibm-aml/test"
+  curated_prefix      = "ibm-aml/test"
+  athena_create_views = false # the views run a local script against real Athena
 }
 
 run "prepare_leads_to_bq1_then_the_gin" {
@@ -41,8 +42,8 @@ run "prepare_leads_to_bq1_then_the_gin" {
     error_message = "Prepare must hand over to BQ1."
   }
   assert {
-    condition     = local.pipeline_definition.States.ScoreBQ1.Next == "ScoringConfiguration"
-    error_message = "BQ1 scoring must lead to the unchanged GIN scoring path."
+    condition     = local.pipeline_definition.States.ScoreBQ1.Next == "PointQueueTable" && local.pipeline_definition.States.PointQueueTemplate.Next == "ScoringConfiguration"
+    error_message = "BQ1 scoring must re-point the Athena queue table, then lead to the unchanged GIN scoring path."
   }
   assert {
     condition     = local.pipeline_definition.States.BQ1Defaults.Result.retrain == false

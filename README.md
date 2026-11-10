@@ -29,8 +29,22 @@ EventBridge (daily, off by default) / manual start
      -> Prepare (EMR Serverless)   raw zone -> curated zone, waits for the job
      -> TrainBQ1 (EMR Serverless)  only when the input has {"bq1": {"retrain": true}}
      -> ScoreBQ1 (EMR Serverless)  one job per day in bq1.dates, with the pinned (or just-trained) model
-     -> GIN Score (optional, Batch) BQ2: stage graph/model, score, rank, publish gold
+     -> PointQueueTable (Athena)   ALTER TABLE queue_files to this execution's queue, so the
+                                   dashboard shows the newest run with no manual step
+     -> GIN Score (optional, Batch) stage graph/model, score, rank, publish gold
+     -> BQ2Score (Batch, Map)      only with enable_bq2: each bq2 day scored on the shared graph
+                                   and once per bank in bq2_banks (execution ids bq2-shared-<day>,
+                                   bq2-bank-<bank>-<day>); a completed identical run is reused
+     -> BQ2Compare (Batch)         bank view vs shared view -> gold sharing/comparison.csv,
+                                   under its own role (the only Batch role that reads labels)
 ```
+
+The Athena layer (workgroup, Glue database, tables, views) is created by Terraform
+(`infra/athena.tf`); see `dashboard/athena/README.md`.
+
+**To run everything end to end** (deploy, run, check, dashboard), follow
+[docs/run-pipeline.md](docs/run-pipeline.md), or with the team deployment already in place:
+`scripts/run_pipeline.sh`.
 
 The dataset is static, so ingestion really runs once. Daily runs skip it. If the
 task fails partway, a re-run skips files already in S3 and carries on.
@@ -396,7 +410,8 @@ streamlit run app.py
 ```
 
 Each click is one or two queries (a few seconds); results are cached for the session and the sidebar shows the
-data scanned. Workgroup, database, region and the queue run are set with `DASH_ATHENA_*` and `DASH_QUEUE_URI`
+data scanned. Workgroup, database and region are set with `DASH_ATHENA_*`; the queue run is whichever one the
+Glue table `queue_files` points at (each pipeline run re-points it), or `DASH_QUEUE_URI` if set
 (see `dashlib/config.py`). `ranking.json` and the `metrics.json` files are small JSON documents, so they are fetched
 directly from S3 rather than through SQL.
 

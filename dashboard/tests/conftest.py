@@ -39,7 +39,7 @@ if os.environ.get("DASH_TEST_FAKE_ATHENA") == "1":
         def get_object(self, Bucket, Key):
             uri = f"s3://{Bucket}/{Key}"
             self.keys.append(uri)
-            if uri.startswith(config.QUEUE_URI) and uri.endswith("/ranking.json"):
+            if uri.startswith(FAKE_QUEUE_URI) and uri.endswith("/ranking.json"):
                 day = uri.split("date=")[1].split("/")[0]
                 path = SAMPLE / "queue" / f"date={day}" / "ranking.json"
             elif uri.startswith(config.RULES_TUNED_URI):
@@ -55,9 +55,23 @@ if os.environ.get("DASH_TEST_FAKE_ATHENA") == "1":
                 body = json.dumps({**json.loads(body), "model": "s3://models-bucket/bq1/sample-bq1"}).encode()
             return {"Body": io.BytesIO(body)}
 
+    # Where the Glue table queue_files points: the dashboard reads ranking.json from this folder.
+    FAKE_QUEUE_URI = "s3://gold-bucket/bq1/queue/sample-run"
+
+    class FakeGlue:
+        def __init__(self):
+            self.calls = 0
+
+        def get_table(self, DatabaseName, Name):
+            assert (DatabaseName, Name) == (config.ATHENA_DATABASE, "queue_files")
+            self.calls += 1
+            return {"Table": {"StorageDescriptor": {"Location": FAKE_QUEUE_URI + "/"}}}
+
     FAKE_S3 = FakeS3()
+    FAKE_GLUE = FakeGlue()
     data._athena_client = lambda: FAKE
     data._s3_client = lambda: FAKE_S3
+    data._glue_client = lambda: FAKE_GLUE
 
     def _no_duckdb():
         DUCK_CALLS.append("connection")

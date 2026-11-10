@@ -34,6 +34,7 @@ mock_provider "archive" {}
 variables {
   enable_scoring       = false
   scoring_image_digest = ""
+  athena_create_views  = false # the views run a local script against real Athena
 }
 
 run "scoring_disabled_by_default" {

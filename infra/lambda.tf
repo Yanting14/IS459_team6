@@ -5,6 +5,9 @@ data "archive_file" "check_raw" {
   source_dir       = "${path.module}/../lambdas/check_raw"
   output_path      = "${path.module}/build/check_raw.zip"
   output_file_mode = "0666"
+  # Running the handler locally leaves __pycache__ beside it; zipping that changes the hash
+  # and redeploys an unchanged function.
+  excludes = ["__pycache__", "__pycache__/*"]
 }
 
 data "aws_iam_policy_document" "lambda_assume" {

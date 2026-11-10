@@ -41,3 +41,19 @@ output "scoring_gold_uri" {
 output "scoring_job_queue_arn" {
   value = aws_batch_job_queue.scoring.arn
 }
+
+output "athena_workgroup" {
+  value = aws_athena_workgroup.this.name
+}
+
+output "athena_database" {
+  value = aws_glue_catalog_database.this.name
+}
+
+output "athena_query_policy_arn" {
+  value = aws_iam_policy.athena_query.arn
+}
+
+output "bq2_compare_job_definition" {
+  value = aws_batch_job_definition.bq2_compare.arn
+}

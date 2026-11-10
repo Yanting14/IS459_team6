@@ -107,6 +107,26 @@ def test_ranking_and_metrics_are_read_from_s3():
     assert any(k.startswith(config.RULES_TUNED_URI) for k in conftest.FAKE_S3.keys)
 
 
+def test_ranking_comes_from_the_queue_run_the_table_points_at():
+    """The pipeline re-points queue_files at each new run; ranking.json must follow it, not a fixed path."""
+    data.queue_uri.clear()
+    data.load_ranking_meta.clear()
+    data.load_ranking_meta("2022-09-15")
+    assert conftest.FAKE_S3.keys[-1] == f"{conftest.FAKE_QUEUE_URI}/date=2022-09-15/ranking.json"
+    assert conftest.FAKE_GLUE.calls >= 1
+
+
+def test_dash_queue_uri_overrides_the_table(monkeypatch):
+    monkeypatch.setattr(config, "QUEUE_URI", "s3://elsewhere/bq1/queue/pinned")
+    data.queue_uri.clear()
+    calls = conftest.FAKE_GLUE.calls
+    try:
+        assert data.queue_uri() == "s3://elsewhere/bq1/queue/pinned"
+        assert conftest.FAKE_GLUE.calls == calls
+    finally:
+        data.queue_uri.clear()
+
+
 def test_an_athena_failure_becomes_a_message_the_page_can_show():
     conftest.FAKE.fail_with = "ACCESS_DENIED: not authorized to perform athena:StartQueryExecution"
     try:
