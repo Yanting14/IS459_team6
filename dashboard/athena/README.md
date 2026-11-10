@@ -70,7 +70,11 @@ documents, not tables, so the dashboard fetches them directly from S3 with the s
   result files, ask for a different results location and change `OutputLocation` above.
 - **A table returns 0 rows:** check the `LOCATION` in `01_create_tables.sql` against the real curated prefix.
 - **`HIVE_BAD_DATA` or a type error:** send the full message; a column type needs adjusting.
-- **Re-running** is safe: every statement uses `IF NOT EXISTS` or `OR REPLACE`.
+- **Existing tables or a new pipeline run:** rerun `01_create_tables.sql` and `04_queue_table.sql` to apply
+  the corrected partition templates (each ends with `/`). Their `ALTER TABLE` statements update existing
+  table locations; `CREATE IF NOT EXISTS` alone does not. When switching runs, edit all `LOCATION` and
+  `storage.location.template` values in both the CREATE and ALTER statements. Set `DASH_QUEUE_URI` to the
+  same queue folder, then restart Streamlit to clear cached results. These changes do not move or delete S3 data.
 
 ## Notes
 

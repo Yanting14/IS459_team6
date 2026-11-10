@@ -1,10 +1,10 @@
 -- IS459 team 6: Athena tables over the pipeline's outputs (no data is copied; Athena reads the files in S3).
--- Run once:   python athena\run_sql.py athena\01_create_tables.sql
+-- Apply (also updates existing table locations):   python athena\run_sql.py athena\01_create_tables.sql
 --
 -- Column names and types follow prepare/prepare.py. Spark writes `transfers` and `transfer_labels` into
 -- date=YYYY-MM-DD folders, so `date` is a partition column. Partition projection tells Athena the days
 -- directly, so there is no MSCK REPAIR step and no crawler. If the curated prefix changes, edit the
--- three LOCATION lines (and the template) below.
+-- LOCATION and storage.location.template values in both CREATE and ALTER statements below, then rerun.
 
 CREATE DATABASE IF NOT EXISTS is459_team6;
 
@@ -34,7 +34,13 @@ TBLPROPERTIES (
   'projection.date.format'        = 'yyyy-MM-dd',
   'projection.date.interval'      = '1',
   'projection.date.interval.unit' = 'DAYS',
-  'storage.location.template'     = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfers/date=${date}'
+  'storage.location.template'     = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfers/date=${date}/'
+);
+
+-- CREATE IF NOT EXISTS leaves existing tables unchanged; apply the configured location on reruns.
+ALTER TABLE is459_team6.transfers SET LOCATION 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfers/';
+ALTER TABLE is459_team6.transfers SET TBLPROPERTIES (
+  'storage.location.template' = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfers/date=${date}/'
 );
 
 -- Ground truth, kept apart from the transfers on purpose (ADR-0002). Join on transfer_id.
@@ -55,7 +61,13 @@ TBLPROPERTIES (
   'projection.date.format'        = 'yyyy-MM-dd',
   'projection.date.interval'      = '1',
   'projection.date.interval.unit' = 'DAYS',
-  'storage.location.template'     = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfer_labels/date=${date}'
+  'storage.location.template'     = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfer_labels/date=${date}/'
+);
+
+-- CREATE IF NOT EXISTS leaves existing tables unchanged; apply the configured location on reruns.
+ALTER TABLE is459_team6.transfer_labels SET LOCATION 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfer_labels/';
+ALTER TABLE is459_team6.transfer_labels SET TBLPROPERTIES (
+  'storage.location.template' = 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/transfer_labels/date=${date}/'
 );
 
 -- One row per transfer listed in the dataset's patterns file, with its ring and pattern type.
@@ -78,3 +90,6 @@ CREATE EXTERNAL TABLE IF NOT EXISTS is459_team6.rings (
 )
 STORED AS PARQUET
 LOCATION 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/rings/';
+
+-- CREATE IF NOT EXISTS leaves existing tables unchanged; apply the configured location on reruns.
+ALTER TABLE is459_team6.rings SET LOCATION 's3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512/rings/';

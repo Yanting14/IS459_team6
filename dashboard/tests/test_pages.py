@@ -15,6 +15,23 @@ PAGES = ["views/review_queue.py", "views/account_investigation.py", "views/shari
 DAYS = ["2022-09-15", "2022-09-16"]
 
 
+@pytest.mark.parametrize("page,loader", [
+    ("views/review_queue.py", "load_ranking_meta"),
+    ("views/review_queue.py", "load_metrics"),
+    ("views/account_investigation.py", "neighbour_transfers"),
+])
+def test_data_failures_show_a_friendly_error(page, loader, monkeypatch):
+    from dashlib import data
+
+    def fail(*args, **kwargs):
+        raise data.DataMissing("Access denied to dashboard data")
+
+    monkeypatch.setattr(data, loader, fail)
+    at = AppTest.from_file(str(ROOT / page), default_timeout=60).run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Access denied to dashboard data" in e.value for e in at.error)
+
+
 @pytest.mark.parametrize("page", PAGES)
 def test_page_runs_without_error(page):
     at = AppTest.from_file(str(ROOT / page), default_timeout=60).run()
