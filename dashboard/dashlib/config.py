@@ -9,7 +9,7 @@ Four folders (or S3 prefixes) feed the dashboard. Each can be a local path or an
              models.json (LR and GBT), rules.json, rules_tuned.json
   curated  the Prepare job's curated zone, version prefix included:
              transfers/, transfer_labels/, rings/
-  sharing  the BQ2 comparison table: comparison.csv (optional until it exists)
+  sharing  the BQ2 comparison table: comparison.csv, from bq2/ (the page skips section 2 without it)
 
 Environment variables
   DASH_SOURCE        sample (default) | local | s3  -- only changes the banner and defaults

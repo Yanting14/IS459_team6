@@ -12,6 +12,7 @@ prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 train/                 BQ1: Spark ML on EMR Serverless (train, rules baselines, daily scoring)
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
 scoring/               Frozen GIN, used for BQ2: graph preparation, inference, ranking and evaluation
+bq2/                   BQ2: bank view vs shared view comparison and its results (see bq2/runs/README.md)
 dashboard/             Streamlit review dashboard, one page per business question
 scripts/               Helper scripts
 ```
@@ -400,7 +401,7 @@ The app reads four folders. Each can be a local path or an `s3://` URI.
 <root>/queue/     date=<day>/accounts.csv  date=<day>/ranking.json  (one BQ1 execution's queues)
 <root>/metrics/   models.json  rules.json  rules_tuned.json          (the BQ1 jobs' metrics.json)
 <root>/curated/   transfers/  transfer_labels/  rings/               (the curated version prefix)
-<root>/sharing/   comparison.csv                                     (Person 4's results)
+<root>/sharing/   comparison.csv  comparison_by_day.csv              (the BQ2 results from bq2/)
 ```
 
 The BQ1 queue is published at `s3://is459-team6-gold-207567757101/bq1/queue/<execution>/date=<day>/` by the
@@ -408,8 +409,8 @@ pipeline's score step. It has no per-transfer scores and no evaluation: the scor
 design. Precision and recall come from the training and baseline jobs' `metrics.json` instead.
 
 Pull the files down with the helper script. For each day it refuses a queue without `_SUCCESS`, reads the
-model named in `ranking.json` and takes that model's `metrics.json`, plus the two rules baselines'. Each of
-those files is checked against its S3 ETag (its MD5). It then copies the curated transfers and labels for 1 to
+model named in `ranking.json` and takes that model's `metrics.json`, plus the two rules baselines' and the BQ2
+`comparison.csv` and `comparison_by_day.csv`. Each of those files is checked against its S3 ETag (its MD5). It then copies the curated transfers and labels for 1 to
 16 Sep (history up to the last queue day) and the rings. Account `207567757101`, `us-east-1`; the defaults point
 at execution `bq1-bankvis-20261109` (15 and 16 Sep) over curated `ibm-aml/e2e-20261105-152512`.
 
@@ -422,8 +423,8 @@ python scripts/pull_from_s3.py               # copies into ./data (re-run to res
 DASH_SOURCE=local DASH_ROOT=./data streamlit run app.py
 ```
 
-Use `--execution`, `--days`, `--rules`, `--rules-tuned`, `--curated`, `--from`, `--to` and `--dest` to point at
-a different run or date range. Put Person 4's `comparison.csv` in `data/sharing/`.
+Use `--execution`, `--days`, `--rules`, `--rules-tuned`, `--sharing`, `--curated`, `--from`, `--to` and `--dest`
+to point at a different run or date range.
 
 To read straight from S3 instead, set `DASH_SOURCE=s3` and `DASH_QUEUE_DIR`, `DASH_METRICS_DIR`,
 `DASH_CURATED_DIR` and `DASH_SHARING_DIR` to `s3://...` prefixes. DuckDB uses your AWS credentials. Reading the 32M-row transfers
@@ -431,18 +432,22 @@ table over S3 on every click is slow, so for demos copy the files locally first.
 
 ### `sharing/comparison.csv` (the contract with the BQ2 experiment)
 
-One row per bank and view. Each row is the `evaluation.json` that `scoring.pipeline evaluate` writes for one
-run: `view = bank` for a run made with `--bank`, `view = shared` for the matching run without it (same window,
-budget and eligible accounts, ADR-0004).
+The BQ2 results come from `bq2/` (Zhengyang): `bq2.sharing compare` writes them, and they are published at
+`s3://is459-team6-gold-207567757101/ibm-aml/e2e-20261105-152512/sharing/`. See
+[bq2/runs/README.md](bq2/runs/README.md) for how the runs were made and the caveats.
+
+One row per bank and view: `view = bank` for the run that sees only the bank's own transfers, `view = shared`
+for the run that sees every bank's (same window, budget and eligible accounts, ADR-0004). `comparison_by_day.csv`
+has the same rows split by day, with a leading `date` column.
 
 ```csv
-bank_id,view,k,reviewed,eligible,positive_accounts,true_positives,precision_at_k,recall_at_k
-010,bank,30,30,4000,25,6,0.20,0.24
-010,shared,30,30,4000,25,14,0.47,0.56
+bank_id,view,k,reviewed,eligible,positive_accounts,true_positives,precision_at_k,recall_at_k,model
+010,bank,30,30,4000,25,6,0.20,0.24,gin
+010,shared,30,30,4000,25,14,0.47,0.56,gin
 ```
 
-Until this file exists the Sharing page shows section 1 (visibility, computed from the rings table) and a
-placeholder for section 2.
+The Sharing page's section 2 reads `comparison.csv`; if it is missing, the page says so and shows section 1
+(visibility, computed from the rings table) only.
 
 ## What has and has not been verified
 

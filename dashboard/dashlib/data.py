@@ -198,7 +198,7 @@ def transfer_labels(ids: list[str], date_from: str, date_to: str) -> pd.DataFram
 
 @st.cache_data(show_spinner=False)
 def load_comparison() -> pd.DataFrame | None:
-    """Bank-view vs shared-view results. None until the BQ2 experiment has produced them."""
+    """Bank-view vs shared-view results from bq2/. None if comparison.csv is not in the sharing folder."""
     path = f"{config.SHARING_DIR}/comparison.csv" if config.SHARING_DIR else ""
     if not path or not exists(path):
         return None

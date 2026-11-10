@@ -49,13 +49,13 @@ st.header("2. How much more would banks detect by sharing data?")
 comparison = data.load_comparison()
 if comparison is None:
     st.warning(
-        "The bank-view vs shared-view results are not available yet, so this section has nothing to plot. "
-        f"It reads `{config.SHARING_DIR or 'sharing'}/comparison.csv`, one row per bank and view:",
-        icon=":material/hourglass_top:")
-    st.code("bank_id,view,k,reviewed,eligible,positive_accounts,true_positives,precision_at_k,recall_at_k\n"
-            "010,bank,30,30,4000,25,6,0.20,0.24\n010,shared,30,30,4000,25,14,0.47,0.56", language="csv")
-    st.caption("Each row is the `evaluation.json` from `scoring.pipeline evaluate` for one run: `view` is `bank` "
-               "for a run with `--bank`, `shared` for the matching run without it. Both runs must use the same "
+        f"No `{config.SHARING_DIR or 'sharing'}/comparison.csv` was found, so this section has nothing to plot. "
+        "Pull it with `scripts/pull_from_s3.py`. It has one row per bank and view:",
+        icon=":material/folder_off:")
+    st.code("bank_id,view,k,reviewed,eligible,positive_accounts,true_positives,precision_at_k,recall_at_k,model\n"
+            "010,bank,30,30,4000,25,6,0.20,0.24,gin\n010,shared,30,30,4000,25,14,0.47,0.56,gin", language="csv")
+    st.caption("`bq2.sharing compare` writes it (see `bq2/runs/README.md`): `view` is `bank` for the run that sees "
+               "only the bank's own transfers, `shared` for the run that sees every bank's. Both use the same "
                "window, budget and eligible accounts (ADR-0004).")
     st.stop()
 
