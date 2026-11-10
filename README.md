@@ -456,6 +456,9 @@ The Sharing page's section 2 reads `comparison.csv`; if it is missing, the page 
   with no exceptions. All 1,000 queue accounts on each day join to curated (`bank_id`, `account_number`) on the
   scored day, leading zeros included (every bank id in both queues starts with 0). The precision and recall shown
   for 15 and 16 Sep (GBT 54.5% / 15.0% and 44.9% / 12.0%) equal `docs/bq1-results.md`.
+- The Sharing page was run headless (10 Nov) on the real BQ2 results pulled from the gold `sharing/` prefix,
+  which match `bq2/runs/results/` byte for byte. It shows 16 banks and 165 true positives in bank view against
+  210 with shared data (recall 31% to 39%), as in `bq2/runs/README.md`; bank ids keep their leading zeros.
 - The queue is ranked by gradient-boosted trees trained on EMR, using only what the account's own bank can see.
   Scores rank accounts; they are not probabilities. The three reasons are descriptive flags (the account's most
   extreme features that day), not model attributions.
