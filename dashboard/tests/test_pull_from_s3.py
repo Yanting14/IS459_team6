@@ -17,6 +17,8 @@ EXECUTION = "bq1-test"
 DAYS = ["2022-09-15", "2022-09-16"]
 MODEL = "s3://models/bq1/bq1-test"
 RULES, TUNED = "s3://gold/bq1/baseline/r1", "s3://gold/bq1/baseline-tuned/t1"
+SHARING = f"s3://gold/{PREFIX}/sharing"
+BY_DAY = b"date,bank_id,view,model,k\n2022-09-15,010,bank,gin,10\n"
 
 
 def put(s3, bucket, key, body):
@@ -50,10 +52,14 @@ def populate(s3, model=MODEL):
         bucket, key = pull.split_uri(uri)
         put(s3, bucket, f"{key}/metrics.json", (SAMPLE / "metrics" / file).read_bytes())
         put(s3, bucket, f"{key}/_SUCCESS", b"")
+    # gold: the BQ2 comparison files, as bq2/ publishes them
+    put(s3, "gold", f"{PREFIX}/sharing/comparison.csv", (SAMPLE / "sharing" / "comparison.csv").read_bytes())
+    put(s3, "gold", f"{PREFIX}/sharing/comparison_by_day.csv", BY_DAY)
 
 
 def run(s3, dest, **kw):
-    args = dict(date_from="2022-09-15", date_to="2022-09-16", assume_yes=True, say=lambda *_: None)
+    args = dict(date_from="2022-09-15", date_to="2022-09-16", assume_yes=True, say=lambda *_: None,
+                sharing_uri=SHARING)
     args.update(kw)
     curated = args.pop("curated", f"s3://curated/{PREFIX}")
     pull.pull(s3, "s3://gold/bq1/queue", EXECUTION, DAYS, RULES, TUNED, curated,
@@ -69,6 +75,8 @@ def test_pulls_both_days_the_metrics_and_only_the_requested_dates(aws, tmp_path)
         assert (tmp_path / "queue" / f"date={day}" / "ranking.json").exists()
     for file in ("models.json", "rules.json", "rules_tuned.json"):
         assert (tmp_path / "metrics" / file).read_bytes() == (SAMPLE / "metrics" / file).read_bytes()
+    assert (tmp_path / "sharing" / "comparison.csv").read_bytes() == (SAMPLE / "sharing" / "comparison.csv").read_bytes()
+    assert (tmp_path / "sharing" / "comparison_by_day.csv").read_bytes() == BY_DAY
     got = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.parquet"))
     assert "curated/transfers/date=2022-09-15/part-0.parquet" in got
     assert "curated/transfer_labels/date=2022-09-16/part-0.parquet" in got
@@ -106,6 +114,14 @@ def test_days_scored_by_different_models_are_refused(aws, tmp_path):
         json.dumps({"model": "s3://models/bq1/other"}).encode())
     with pytest.raises(SystemExit, match="different models"):
         run(aws, tmp_path)
+
+
+def test_missing_sharing_results_are_refused(aws, tmp_path):
+    populate(aws)
+    aws.delete_object(Bucket="gold", Key=f"{PREFIX}/sharing/comparison_by_day.csv")
+    with pytest.raises(SystemExit, match="comparison_by_day.csv is missing"):
+        run(aws, tmp_path)
+    assert not list(tmp_path.rglob("*"))
 
 
 def test_dry_run_downloads_nothing(aws, tmp_path):

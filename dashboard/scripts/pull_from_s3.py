@@ -10,9 +10,11 @@ What it copies
                  execution. A day without _SUCCESS is refused (the score job writes it last).
   data/metrics/  models.json: the metrics.json of the model named in the queues' ranking.json;
                  rules.json, rules_tuned.json: the two rules baselines' metrics.json
+  data/sharing/  comparison.csv and comparison_by_day.csv: the BQ2 bank-view vs shared-view results
+                 written by bq2/ (see bq2/runs/README.md)
   data/curated/  transfers/ and transfer_labels/ for the date range, and rings/ in full.
 
-Every queue and metrics file is checked against its S3 ETag (the MD5 of a single-part upload).
+Every queue, metrics and sharing file is checked against its S3 ETag (the MD5 of a single-part upload).
 It uses your normal AWS credentials (set AWS_PROFILE if you use a named profile).
 """
 from __future__ import annotations
@@ -31,7 +33,9 @@ DEFAULT_DAYS = ("2022-09-15", "2022-09-16")
 DEFAULT_RULES = f"{GOLD}/bq1/baseline/t4-20261108"
 DEFAULT_RULES_TUNED = f"{GOLD}/bq1/baseline-tuned/20261109"
 DEFAULT_CURATED = "s3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512"
+DEFAULT_SHARING = f"{GOLD}/ibm-aml/e2e-20261105-152512/sharing"
 QUEUE_FILES = ("accounts.csv", "ranking.json")
+SHARING_FILES = ("comparison.csv", "comparison_by_day.csv")
 DATE_PART = re.compile(r"/date=(\d{4}-\d{2}-\d{2})/")
 
 
@@ -85,8 +89,8 @@ def finished(s3, folder: str, what: str) -> None:
 
 
 def plan_artifacts(s3, queues_uri: str, execution: str, days: list[str], rules_uri: str,
-                   tuned_uri: str) -> tuple[list[tuple[str, str, int, str]], str]:
-    """(uri, local path, bytes, etag) for every queue and metrics file, and the model folder."""
+                   tuned_uri: str, sharing_uri: str = DEFAULT_SHARING) -> tuple[list[tuple[str, str, int, str]], str]:
+    """(uri, local path, bytes, etag) for every queue, metrics and sharing file, and the model folder."""
     files: list[tuple[str, str, int, str]] = []
     models = set()
     for day in days:
@@ -110,20 +114,27 @@ def plan_artifacts(s3, queues_uri: str, execution: str, days: list[str], rules_u
         if obj is None:
             raise SystemExit(f"{folder}/metrics.json is missing.")
         files.append((f"{folder}/metrics.json", local, obj["Size"], obj["ETag"].strip('"')))
+    for name in SHARING_FILES:
+        uri = f"{sharing_uri.rstrip('/')}/{name}"
+        obj = head(s3, uri)
+        if obj is None:
+            raise SystemExit(f"{uri} is missing.")
+        files.append((uri, f"sharing/{name}", obj["Size"], obj["ETag"].strip('"')))
     return files, model
 
 
 def pull(s3, queues_uri: str, execution: str, days: list[str], rules_uri: str, tuned_uri: str,
          curated_uri: str, date_from: str, date_to: str, dest: Path,
-         dry_run: bool = False, assume_yes: bool = False, say=print) -> None:
-    artifacts, model = plan_artifacts(s3, queues_uri, execution, days, rules_uri, tuned_uri)
+         dry_run: bool = False, assume_yes: bool = False, say=print,
+         sharing_uri: str = DEFAULT_SHARING) -> None:
+    artifacts, model = plan_artifacts(s3, queues_uri, execution, days, rules_uri, tuned_uri, sharing_uri)
     say(f"Execution {execution}, days {', '.join(days)}, model {model}")
     curated = plan_curated(s3, curated_uri, date_from, date_to)
     if not curated:
         raise SystemExit(f"No curated parquet files found under {curated_uri} for {date_from}..{date_to}. "
                          "Check the prefix and dates.")
     total = sum(size for _, _, size, _ in artifacts) + sum(size for *_, size in curated)
-    say(f"Queue and metrics files: {len(artifacts)}. Curated files: {len(curated)}. Total: {total / 1e9:.2f} GB")
+    say(f"Queue, metrics and sharing files: {len(artifacts)}. Curated files: {len(curated)}. Total: {total / 1e9:.2f} GB")
     if dry_run:
         say("Dry run: nothing downloaded.")
         return
@@ -155,9 +166,7 @@ def pull(s3, queues_uri: str, execution: str, days: list[str], rules_uri: str, t
         done += 1
         if done % 25 == 0 or done == len(curated):
             say(f"  curated: {done}/{len(curated)} files")
-    (dest / "sharing").mkdir(exist_ok=True)
     say(f"Done. Run:  DASH_SOURCE=local DASH_ROOT={dest} streamlit run app.py")
-    say("The sharing/ folder is empty until Person 4's comparison.csv is placed there.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -167,6 +176,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--days", default=",".join(DEFAULT_DAYS), help="comma-separated queue days")
     ap.add_argument("--rules", default=DEFAULT_RULES, help="the label-free rules baseline's output folder")
     ap.add_argument("--rules-tuned", default=DEFAULT_RULES_TUNED, help="the best-case rules' output folder")
+    ap.add_argument("--sharing", default=DEFAULT_SHARING, help="where the BQ2 comparison files are published")
     ap.add_argument("--curated", default=DEFAULT_CURATED, help="curated zone URI, version prefix included")
     ap.add_argument("--from", dest="date_from", default="2022-09-01", help="first transfer date to copy")
     ap.add_argument("--to", dest="date_to", default="2022-09-16",
@@ -184,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
     days = [d.strip() for d in args.days.split(",") if d.strip()]
     try:
         pull(s3, args.queues, args.execution, days, args.rules, args.rules_tuned, args.curated,
-             args.date_from, args.date_to, Path(args.dest), args.dry_run, args.yes)
+             args.date_from, args.date_to, Path(args.dest), args.dry_run, args.yes, sharing_uri=args.sharing)
     except (BotoCoreError, ClientError) as err:
         sys.exit(f"AWS error: {err}\nCheck you are logged in (aws sts get-caller-identity) and the right "
                  "AWS_PROFILE is set.")
