@@ -91,9 +91,7 @@ if second_hop:
         second = visible
 edges_raw = pd.concat([own, second], ignore_index=True)
 
-ids = edges_raw.transfer_id.tolist()
-marks = data.transfer_labels(ids, date_from, date_to)
-edges_raw = edges_raw.merge(marks, on="transfer_id", how="left")
+# the ground-truth mark comes with each transfer (joined in the query), so there is no second lookup
 edges_raw["laundering"] = edges_raw["laundering_mark"].fillna(0).astype(int) == 1
 
 # ---- aggregate to one arrow per pair of accounts
@@ -145,7 +143,6 @@ with left:
 
 # ---- timeline
 st.subheader("Timeline of this account's transfers")
-own = own.merge(marks, on="transfer_id", how="left")
 own["laundering"] = own["laundering_mark"].fillna(0).astype(int) == 1
 outgoing = (own.sender_bank_id == bank) & (own.sender_account_number == account)
 own["direction"] = outgoing.map({True: "Outgoing", False: "Incoming"})
@@ -158,3 +155,4 @@ with st.expander("Table view: this account's transfers"):
     shown = own[["timestamp", "direction", "counterparty", "amount_paid", "payment_currency", "payment_format"]
                 + (["laundering"] if show_labels else [])]
     st.dataframe(shown.sort_values("timestamp", ascending=False), hide_index=True, width="stretch")
+ui.footer()

@@ -46,7 +46,10 @@ st.info(
 
 # =============================================================== 2. detection
 st.header("2. How much more would banks detect by sharing data?")
-comparison = data.load_comparison()
+try:
+    comparison = data.load_comparison()
+except data.DataMissing as err:
+    ui.stop_missing(err)
 if comparison is None:
     st.warning(
         f"No `{config.SHARING_DIR or 'sharing'}/comparison.csv` was found, so this section has nothing to plot. "
@@ -85,3 +88,4 @@ with st.expander("Table view"):
         hide_index=True, width="stretch")
 st.caption("Retrospective results on simulated data. Same accounts, window, review budget and model weights in "
            "both views; only the transfers each view can see differ.")
+ui.footer()
