@@ -236,7 +236,7 @@ def main(out: Path) -> None:
         (metrics_dir / file).write_text(json.dumps({"note": note, "k": K, "test": metrics[name]}, indent=2))
     tp, n_pos = metrics["gbt"][0]["tp"], metrics["gbt"][0]["positives"]
 
-    # ---- BQ2 comparison: SYNTHETIC numbers in the format the real experiment should deliver
+    # ---- BQ2 comparison: SYNTHETIC numbers in the columns of bq2/runs/results/comparison.csv
     share = out / "sharing"
     share.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -248,7 +248,7 @@ def main(out: Path) -> None:
         for view, t in (("bank", tp_bank), ("shared", tp_shared)):
             rows.append({"bank_id": b, "view": view, "k": k_b, "reviewed": k_b, "eligible": 4000,
                          "positive_accounts": pos_b, "true_positives": t,
-                         "precision_at_k": t / k_b, "recall_at_k": t / pos_b})
+                         "precision_at_k": t / k_b, "recall_at_k": t / pos_b, "model": "gin"})
     pd.DataFrame(rows).to_csv(share / "comparison.csv", index=False)
     print(f"wrote {out}  ({len(allx):,} transfers, {len(ring_out):,} ring transfers, "
           f"{N_RINGS} rings, queues of {K} for {', '.join(SCORED_DAYS)}, "
