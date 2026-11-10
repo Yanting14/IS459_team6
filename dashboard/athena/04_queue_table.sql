@@ -1,5 +1,5 @@
 -- The BQ1 review queue as an Athena table, for the dashboard (DASH_SOURCE=athena).
--- Run once:   python athena\run_sql.py athena\04_queue_table.sql
+-- Apply (also updates existing table locations):   python athena\run_sql.py athena\04_queue_table.sql
 --
 -- The score job writes date=<day>/accounts.csv, ranking.json and _SUCCESS side by side in each day's folder.
 -- Athena skips _SUCCESS (names starting with "_" are ignored) but would read ranking.json as if it were
@@ -10,7 +10,8 @@
 -- purpose: the dashboard shows it at full precision.
 --
 -- LOCATION is ONE pipeline execution. If the team publishes a newer execution, change the LOCATION and the
--- template below, and set DASH_QUEUE_URI to the same folder so ranking.json is read from it too.
+-- template in both CREATE and ALTER statements below, rerun this file, and set DASH_QUEUE_URI to the
+-- same folder so ranking.json is read from it too. Restart Streamlit to clear cached results.
 
 CREATE EXTERNAL TABLE IF NOT EXISTS is459_team6.queue_files (
   `rank`         string,
@@ -37,7 +38,13 @@ TBLPROPERTIES (
   'projection.date.format'        = 'yyyy-MM-dd',
   'projection.date.interval'      = '1',
   'projection.date.interval.unit' = 'DAYS',
-  'storage.location.template'     = 's3://is459-team6-gold-207567757101/bq1/queue/bq1-bankvis-20261109/date=${date}'
+  'storage.location.template'     = 's3://is459-team6-gold-207567757101/bq1/queue/bq1-bankvis-20261109/date=${date}/'
+);
+
+-- CREATE IF NOT EXISTS leaves existing tables unchanged; apply the configured location on reruns.
+ALTER TABLE is459_team6.queue_files SET LOCATION 's3://is459-team6-gold-207567757101/bq1/queue/bq1-bankvis-20261109/';
+ALTER TABLE is459_team6.queue_files SET TBLPROPERTIES (
+  'storage.location.template' = 's3://is459-team6-gold-207567757101/bq1/queue/bq1-bankvis-20261109/date=${date}/'
 );
 
 CREATE OR REPLACE VIEW is459_team6.queue_accounts AS

@@ -37,7 +37,7 @@ def test_splitter_ignores_semicolons_in_strings_and_comments():
     assert run_sql.split_statements(sql) == ["SELECT 'a;b' AS x", "SELECT `c;d`, \"e;f\""]
 
 
-@pytest.mark.parametrize("name,count", [("01_create_tables.sql", 4), ("02_demo_queries.sql", 4), ("03_sharing_table.sql", 3), ("04_queue_table.sql", 3)])
+@pytest.mark.parametrize("name,count", [("01_create_tables.sql", 9), ("02_demo_queries.sql", 4), ("03_sharing_table.sql", 3), ("04_queue_table.sql", 5)])
 def test_sql_files_split_into_the_expected_statements(name, count):
     assert len(statements(name)) == count
 
@@ -47,7 +47,24 @@ def test_table_locations_match_the_published_layout():
     base = "s3://is459-team6-curated-207567757101/ibm-aml/e2e-20261105-152512"
     for table in ("transfers", "transfer_labels", "rings"):
         assert f"LOCATION '{base}/{table}/'" in ddl
-    assert f"{base}/transfers/date=${{date}}" in ddl
+    assert f"{base}/transfers/date=${{date}}/" in ddl
+
+
+@pytest.mark.parametrize("name", ["01_create_tables.sql", "04_queue_table.sql"])
+def test_projected_locations_are_valid_and_update_existing_tables(name):
+    sql = statements(name)
+    for create in sql:
+        if not create.startswith("CREATE EXTERNAL TABLE"):
+            continue
+        table = re.search(r"IF NOT EXISTS (\S+)", create).group(1)
+        location = re.search(r"LOCATION '([^']+)'", create).group(1)
+        assert f"ALTER TABLE {table} SET LOCATION '{location}'" in sql
+        template = re.search(r"'storage.location.template'\s*=\s*'([^']+)'", create)
+        if template:
+            assert template.group(1) == location + "date=${date}/"
+            updates = [s for s in sql if s.startswith(f"ALTER TABLE {table} SET TBLPROPERTIES")]
+            assert len(updates) == 1
+            assert f"'storage.location.template' = '{template.group(1)}'" in updates[0]
 
 
 # --------------------------------------------------------------------------- runner

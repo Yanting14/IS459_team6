@@ -22,10 +22,10 @@ with st.sidebar:
 
 try:
     queue = data.load_queue(day)
+    meta = data.load_ranking_meta(day)
+    comparison = analysis.model_comparison(data.load_metrics(), day)
 except data.DataMissing as err:
     ui.stop_missing(err)
-meta = data.load_ranking_meta(day)
-comparison = analysis.model_comparison(data.load_metrics(), day)
 gbt = comparison[comparison.approach == "Gradient-boosted trees"]
 
 # ---- headline numbers

@@ -78,7 +78,10 @@ if second_hop:
     cp = cp[~((cp.bank == bank) & (cp.acct == account))]
     top_cp = cp.value_counts().head(n_expand).reset_index()[["bank", "acct"]]
     if len(top_cp):
-        second = data.neighbour_transfers(top_cp, date_from, date_to, limit=3000)
+        try:
+            second = data.neighbour_transfers(top_cp, date_from, date_to, limit=3000)
+        except data.DataMissing as err:
+            ui.stop_missing(err)
         second = second[~second.transfer_id.isin(own.transfer_id)]
         keep: set[str] = set()  # the most recent few transfers of each expanded counterparty
         for b, a in top_cp.itertuples(index=False):
