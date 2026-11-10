@@ -37,7 +37,7 @@ def test_splitter_ignores_semicolons_in_strings_and_comments():
     assert run_sql.split_statements(sql) == ["SELECT 'a;b' AS x", "SELECT `c;d`, \"e;f\""]
 
 
-@pytest.mark.parametrize("name,count", [("01_create_tables.sql", 4), ("02_demo_queries.sql", 4), ("03_sharing_table.sql", 3)])
+@pytest.mark.parametrize("name,count", [("01_create_tables.sql", 4), ("02_demo_queries.sql", 4), ("03_sharing_table.sql", 3), ("04_queue_table.sql", 3)])
 def test_sql_files_split_into_the_expected_statements(name, count):
     assert len(statements(name)) == count
 

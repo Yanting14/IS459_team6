@@ -143,3 +143,4 @@ with st.expander("How this queue was built"):
     if isinstance(elig, int):
         lines.append(f"- **Eligible accounts:** {elig:,}")
     st.write("\n".join(lines))
+ui.footer()

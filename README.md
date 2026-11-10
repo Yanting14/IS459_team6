@@ -373,13 +373,32 @@ A Streamlit app with one page per business question.
 
 | Page | Question | Reads |
 |---|---|---|
-| **Review queue** | Which accounts should investigators review first? | the BQ1 queue (`date=<day>/accounts.csv`, `ranking.json`), `metrics/`, curated `rings/` |
-| **Account investigation** | Which transaction patterns justify that priority? | the queue, curated `transfers/`, `transfer_labels/` |
-| **Sharing experiment** | How much laundering is invisible to a single bank, and how much more would sharing detect? | curated `rings/`, `sharing/comparison.csv` |
+| **Review queue** | Which accounts should investigators review first? | the BQ1 queue (Athena `queue_accounts`; `ranking.json` and `metrics/` from S3), curated `rings/` |
+| **Account investigation** | Which transaction patterns justify that priority? | the queue, curated `transfers/` and `transfer_labels/` (Athena) |
+| **Sharing experiment** | How much laundering is invisible to a single bank, and how much more would sharing detect? | curated `rings/`, the BQ2 comparison (Athena `sharing_comparison`) |
 
 The investigation page has the **Shared view / Bank view** toggle. In bank view only transfers where the
 account's own bank is the sender's or the receiver's bank are kept (the glossary's *bank view*), so the
 account's own transfers stay but second-hop transfers between other banks disappear.
+
+## Run it on Amazon Athena (the real data path)
+
+The dashboard queries the pipeline's outputs with SQL on Athena, as the proposal describes. One-time setup (the
+workgroup, the Glue tables over the curated and gold zones, the queue and sharing tables) is in
+[dashboard/athena/README.md](dashboard/athena/README.md). Then:
+
+```bash
+cd dashboard
+pip install -r requirements.txt
+aws sts get-caller-identity                  # confirm you are logged in (set AWS_PROFILE if you use a profile)
+set DASH_SOURCE=athena                       # Windows Command Prompt;  export DASH_SOURCE=athena  on macOS/Linux
+streamlit run app.py
+```
+
+Each click is one or two queries (a few seconds); results are cached for the session and the sidebar shows the
+data scanned. Workgroup, database, region and the queue run are set with `DASH_ATHENA_*` and `DASH_QUEUE_URI`
+(see `dashlib/config.py`). `ranking.json` and the `metrics.json` files are small JSON documents, so they are fetched
+directly from S3 rather than through SQL.
 
 ## Run it on the sample data (no AWS needed)
 
@@ -393,9 +412,10 @@ The default is `DASH_SOURCE=sample`, which reads `sample_data/`. **Everything in
 `scripts/make_sample_data.py` in the same formats the pipeline publishes) and the app says so in a banner.
 Rebuild it with `python scripts/make_sample_data.py`.
 
-## Run it on the real pipeline output
+## Run it offline on a copy of the pipeline output (DuckDB)
 
-The app reads four folders. Each can be a local path or an `s3://` URI.
+This is the offline path, kept for working without a connection. It is not the Athena path above and reads files
+with DuckDB. The app reads four folders. Each can be a local path or an `s3://` URI.
 
 ```
 <root>/queue/     date=<day>/accounts.csv  date=<day>/ranking.json  (one BQ1 execution's queues)
@@ -452,6 +472,10 @@ The Sharing page's section 2 reads `comparison.csv`; if it is missing, the page 
 ## What has and has not been verified
 
 - The app, the data layer and the visibility analysis are tested on the sample data (`python -m pytest tests`).
+- The Athena path is tested with a fake Athena client that answers from the sample data (DuckDB), which runs all
+  three pages through the Athena code. **It has not been run against the real Athena service**: the SQL is plain
+  `SELECT`, `LEFT JOIN`, `WHERE`, `ORDER BY` and `LIMIT`, but only the real service can confirm it, so run the
+  app once with `DASH_SOURCE=athena` and compare the queue and Sharing numbers with those below.
 - All three pages were run headless against the real files pulled for execution `bq1-bankvis-20261109` (9 Nov),
   with no exceptions. All 1,000 queue accounts on each day join to curated (`bank_id`, `account_number`) on the
   scored day, leading zeros included (every bank id in both queues starts with 0). The precision and recall shown
@@ -473,11 +497,13 @@ The Sharing page's section 2 reads `comparison.csv`; if it is missing, the page 
 app.py                      navigation
 views/                      the three pages
 dashlib/config.py           where data is read from
-dashlib/data.py             every read (DuckDB); pages never touch files
+dashlib/data.py             every read; pages never touch files or a database. Athena SQL, or DuckDB offline
+dashlib/athena.py           the Athena client: run a query, get a DataFrame, count bytes scanned
 dashlib/analysis.py         ring visibility, bank view, uplift (pure functions, tested)
 dashlib/charts.py           Plotly figures
 scripts/make_sample_data.py synthetic data generator
-scripts/pull_from_s3.py     downloads the real BQ1 queues, metrics and curated files from S3
+athena/                     Glue tables, demo queries and the runner (see athena/README.md)
+scripts/pull_from_s3.py     (offline path) downloads the real BQ1 queues, metrics and curated files from S3
 sample_data/                the generated sample (2 MB)
 tests/                      unit tests and a headless run of every page
 ```
