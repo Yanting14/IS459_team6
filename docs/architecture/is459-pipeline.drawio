@@ -112,7 +112,7 @@
         <mxCell id="n37" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=12;html=1;fontFamily=Helvetica;strokeColor=#E7157B;strokeWidth=1.5;endArrow=block;endFill=1;endSize=5;fontSize=10;fontColor=#E7157B;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" target="n36" source="n34">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="n38" value="&lt;b style=&quot;font-size:12px&quot;&gt;IBM AML dataset&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Kaggle · HI-Medium&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;32M payments&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;+ Patterns.txt&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=center;verticalAlign=top;spacingTop=74;spacingLeft=8;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="n38" value="&lt;b style=&quot;font-size:12px&quot;&gt;IBM AML dataset&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Kaggle · HI-Medium&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;32M transfers&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;+ Patterns.txt&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=center;verticalAlign=top;spacingTop=74;spacingLeft=8;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="40" y="262" width="130" height="220" as="geometry" />
         </mxCell>
         <mxCell id="n39" value="" style="shape=mxgraph.basic.document;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#232F3E;strokeWidth=1.5;" vertex="1" parent="1">
@@ -130,7 +130,7 @@
         <mxCell id="n43" value="2" style="ellipse;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#232F3E;strokeColor=#FFFFFF;strokeWidth=2;fontColor=#FFFFFF;fontSize=12;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="278" y="250" width="24" height="24" as="geometry" />
         </mxCell>
-        <mxCell id="n44" value="&lt;b style=&quot;font-size:12px&quot;&gt;Prepare · EMR Serverless&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Validate; bad rows → quarantine (run fails above 1%)&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Account-day features, 7-day window&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Labels + rings written apart&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Skipped if already built&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=center;verticalAlign=top;spacingTop=58;spacingLeft=8;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="n44" value="&lt;b style=&quot;font-size:12px&quot;&gt;Prepare · EMR Serverless&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Validate; quarantined rows set aside (run fails above 1%)&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Account-day features, 7-day window&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Labels + rings written apart&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Skipped if already built&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=center;verticalAlign=top;spacingTop=58;spacingLeft=8;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="460" y="262" width="170" height="220" as="geometry" />
         </mxCell>
         <mxCell id="n45" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.emr;" vertex="1" parent="1">
@@ -196,7 +196,7 @@
         <mxCell id="n65" value="" style="rounded=1;arcSize=6;html=1;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;" vertex="1" parent="1">
           <mxGeometry x="1700" y="262" width="150" height="220" as="geometry" />
         </mxCell>
-        <mxCell id="n66" value="&lt;b&gt;Streamlit on EC2&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;password gate&lt;br&gt;reads Athena&lt;/font&gt;" style="text;html=1;whiteSpace=wrap;fontFamily=Helvetica;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="n66" value="&lt;b&gt;Streamlit on EC2&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;HTTP + password&lt;br&gt;Athena + S3 JSON&lt;/font&gt;" style="text;html=1;whiteSpace=wrap;fontFamily=Helvetica;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="1744" y="266" width="104" height="40" as="geometry" />
         </mxCell>
         <mxCell id="n112" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
@@ -262,20 +262,20 @@
         <mxCell id="n86" value="" style="rounded=1;arcSize=6;html=1;fillColor=#F0FAF8;strokeColor=#0B7D6E;dashed=1;dashPattern=6 4;" vertex="1" parent="1">
           <mxGeometry x="600" y="530" width="880" height="166" as="geometry" />
         </mxCell>
-        <mxCell id="n88" value="&lt;b style=&quot;font-size:12px&quot;&gt;Train · EMR Spark ML&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Logistic regression + GBT&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;7–12 Sep train · 13–14 validate&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Target: laundering within 24h&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=left;verticalAlign=top;spacingTop=10;spacingLeft=50;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="615" y="566" width="240" height="114" as="geometry" />
+        <mxCell id="n88" value="&lt;b style=&quot;font-size:12px&quot;&gt;Train · EMR Spark ML&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Logistic regression + GBT&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;7–12 Sep train · 13–14 validate&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Label: laundered within 24h&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=left;verticalAlign=top;spacingTop=10;spacingLeft=50;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="615" y="544" width="240" height="114" as="geometry" />
         </mxCell>
         <mxCell id="n89" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.emr;" vertex="1" parent="1">
-          <mxGeometry x="623" y="578" width="34" height="34" as="geometry" />
+          <mxGeometry x="623" y="556" width="34" height="34" as="geometry" />
         </mxCell>
         <mxCell id="n90" value="&lt;b style=&quot;font-size:12px&quot;&gt;S3 · model store&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Versioned bucket&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Q1 models, one version pinned&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Frozen GIN bundle&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#0B7D6E;strokeWidth=1;align=left;verticalAlign=top;spacingTop=10;spacingLeft=50;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="885" y="566" width="290" height="114" as="geometry" />
+          <mxGeometry x="885" y="544" width="290" height="114" as="geometry" />
         </mxCell>
         <mxCell id="n91" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
-          <mxGeometry x="893" y="578" width="34" height="34" as="geometry" />
+          <mxGeometry x="893" y="556" width="34" height="34" as="geometry" />
         </mxCell>
         <mxCell id="n92" value="&lt;b style=&quot;font-size:12px&quot;&gt;Fair test&lt;/b&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Precision@1,000 vs a rules baseline&lt;/div&gt;&lt;div style=&quot;margin-top:6px;color:#545B64&quot;&gt;Test days 15–16 Sep only; model chosen on validation days first&lt;/div&gt;" style="rounded=1;arcSize=6;absoluteArcSize=0;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;strokeWidth=1;align=center;verticalAlign=top;spacingTop=10;spacingLeft=8;spacingRight=8;fontColor=#232F3E;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1215" y="566" width="240" height="114" as="geometry" />
+          <mxGeometry x="1215" y="544" width="240" height="114" as="geometry" />
         </mxCell>
         <mxCell id="n93" value="features + labels" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=12;html=1;fontFamily=Helvetica;strokeColor=#545B64;strokeWidth=2;endArrow=block;endFill=1;endSize=5;fontSize=10;fontColor=#545B64;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" target="n88" source="n47">
           <mxGeometry relative="1" x="-0.4" as="geometry" />
@@ -290,13 +290,13 @@
           <mxGeometry relative="1" x="0.28" as="geometry" />
         </mxCell>
         <mxCell id="n97" value="pinned Q1 model" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=12;html=1;fontFamily=Helvetica;strokeColor=#0B7D6E;strokeWidth=2;endArrow=block;endFill=1;endSize=5;fontSize=10;fontColor=#0B7D6E;labelBackgroundColor=#FFFFFF;dashed=1;dashPattern=6 4;exitY=0;exitDx=0;exitDy=0;entryDx=0;entryDy=0;exitX=0.9138;entryX=1;entryY=0.78;" edge="1" parent="1" target="n53" source="n90">
-          <mxGeometry relative="1" x="-0.47" as="geometry" />
+          <mxGeometry relative="1" x="-0.6" as="geometry" />
         </mxCell>
         <mxCell id="n98" value="results" style="edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=12;html=1;fontFamily=Helvetica;strokeColor=#E07B12;strokeWidth=2;endArrow=block;endFill=1;endSize=5;fontSize=10;fontColor=#E07B12;labelBackgroundColor=#FFFFFF;exitX=1;exitDx=0;exitDy=0;entryX=0;entryDx=0;entryDy=0;exitY=0.5;entryY=0.7727;jumpStyle=arc;jumpSize=8;" edge="1" parent="1" target="n57" source="n55">
           <mxGeometry relative="1" x="0.4" as="geometry" />
         </mxCell>
         <mxCell id="n87" value="&lt;b&gt;MODEL STORE AND TRAINING&lt;/b&gt; &lt;font color=&quot;#545B64&quot;&gt;· Q1 retrains only when an execution asks for it; the GIN is pretrained and never retrained&lt;/font&gt;" style="text;html=1;whiteSpace=wrap;fontFamily=Helvetica;strokeColor=none;fillColor=none;align=left;verticalAlign=top;fontColor=#232F3E;fontSize=11;labelBackgroundColor=#F0FAF8;" vertex="1" parent="1">
-          <mxGeometry x="617" y="538" width="850" height="18" as="geometry" />
+          <mxGeometry x="617" y="668" width="850" height="18" as="geometry" />
         </mxCell>
         <mxCell id="n99" value="" style="rounded=1;arcSize=6;html=1;fillColor=#F5F6F8;strokeColor=#CBD3DD;" vertex="1" parent="1">
           <mxGeometry x="225" y="722" width="1616" height="128" as="geometry" />
@@ -310,19 +310,19 @@
         <mxCell id="n102" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" vertex="1" parent="1">
           <mxGeometry x="250" y="778" width="36" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="n103" value="&lt;b&gt;IAM + encryption&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;One role per job · labels read only by Train, Q2 compare and the dashboard (evaluation), never by scoring jobs · SSE-S3, TLS only&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="n103" value="&lt;b&gt;IAM + encryption&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;Least-privilege roles per job group · labels: Prepare writes; Train, Q2 compare, dashboard (evaluation) read; scoring jobs never · SSE-S3 · S3 TLS only&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="506" y="754" width="250" height="84" as="geometry" />
         </mxCell>
         <mxCell id="n104" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.identity_and_access_management;" vertex="1" parent="1">
           <mxGeometry x="516" y="778" width="36" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="n105" value="&lt;b&gt;AWS Budgets&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;US$250 for 2026 · emails at 50, 80 and 100% of actual spend and 100% of forecast&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="n105" value="&lt;b&gt;AWS Budgets&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;US$250 for 2026, account-wide · emails alert_emails (none by default) at 50, 80, 100% actual, 100% forecast&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="772" y="754" width="250" height="84" as="geometry" />
         </mxCell>
         <mxCell id="n106" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.budgets_2;" vertex="1" parent="1">
           <mxGeometry x="782" y="778" width="36" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="n107" value="&lt;b&gt;Compute limits&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;EMR capped at 32 vCPU, stops when idle · Batch scales to zero · dashboard EC2 off by default&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="n107" value="&lt;b&gt;Compute limits&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;EMR capped at 32 vCPU, stops when idle · Batch scales to zero · dashboard EC2 only while enable_dashboard is on (demo weeks)&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fontFamily=Helvetica;fillColor=#FFFFFF;strokeColor=#CBD3DD;align=left;verticalAlign=middle;spacingLeft=56;spacingRight=8;fontColor=#232F3E;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="1038" y="754" width="250" height="84" as="geometry" />
         </mxCell>
         <mxCell id="n108" value="" style="sketch=0;points=[];outlineConnect=0;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;html=1;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.emr;" vertex="1" parent="1">
