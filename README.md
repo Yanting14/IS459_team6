@@ -14,10 +14,12 @@ train/                 BQ1: Spark ML on EMR Serverless (train, rules baselines, 
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
 scoring/               Frozen GIN, used for BQ2: graph preparation, inference, ranking and evaluation
 bq2/                   BQ2: bank view vs shared view comparison and its results (see bq2/runs/README.md)
-dashboard/             Streamlit review dashboard, one page per business question; hosted on
-                       EC2 behind a shared password when enable_dashboard is on
-scripts/               Helper scripts: run_pipeline.sh, cost_report.py (spend per AWS service
-                       from Cost Explorer), teardown.sh (deletes everything at project end)
+dashboard/             Streamlit review dashboard, one page per business question;
+                       hosted on EC2 (plain HTTP, shared password) while
+                       enable_dashboard is on
+scripts/               Helper scripts: run_pipeline.sh, cost_report.py (spend per
+                       AWS service from Cost Explorer), teardown.sh (deletes
+                       everything at project end)
 docs/                  Runbooks, ADRs, teardown.md, architecture/ (the diagram)
 ```
 
@@ -25,7 +27,8 @@ docs/                  Runbooks, ADRs, teardown.md, architecture/ (the diagram)
 
 ![IS459 pipeline architecture on AWS](docs/architecture/is459-pipeline.png)
 
-Source: [docs/architecture/is459-pipeline.drawio](docs/architecture/is459-pipeline.drawio) (open in draw.io; the PNG is page 1).
+Source: [docs/architecture/is459-pipeline.drawio](docs/architecture/is459-pipeline.drawio)
+(open in draw.io; the PNG is page 1).
 
 ```
 EventBridge (daily, off by default) / manual start
@@ -39,7 +42,7 @@ EventBridge (daily, off by default) / manual start
      -> ScoreBQ1 (EMR Serverless)  one job per day in bq1.dates, with the pinned (or just-trained) model
      -> PointQueueTable (Athena)   ALTER TABLE queue_files to this execution's queue, so the
                                    dashboard shows the newest run with no manual step
-     -> GIN Score (optional, Batch) stage graph/model, score, rank, publish gold
+     -> Score (GIN, Batch)         optional: stage graph/model, score, rank, publish gold
      -> BQ2Score (Batch, Map)      only with enable_bq2: each bq2 day scored on the shared graph
                                    and once per bank in bq2_banks (execution ids bq2-shared-<day>,
                                    bq2-bank-<bank>-<day>); a completed identical run is reused
@@ -47,15 +50,22 @@ EventBridge (daily, off by default) / manual start
                                    under its own role (the only Batch role that reads labels)
 
 Alongside the pipeline, not part of an execution:
-  Dashboard (EC2, off by default)  Streamlit behind a shared password, reads Athena
-  AWS Budgets                      US$250 for 2026; emails at 50, 80, 100% actual, 100% forecast
-  scripts/cost_report.py           spend per AWS service from Cost Explorer, for the slides
-  scripts/teardown.sh              deletes every project resource; see docs/teardown.md
+  Dashboard (EC2)                  only while enable_dashboard is on (demo weeks):
+                                   Streamlit, plain HTTP, shared password; reads
+                                   Athena and small JSON files from S3
+  AWS Budgets                      US$250 for 2026, account-wide; emails
+                                   alert_emails (none by default) at 50, 80, 100%
+                                   actual and 100% forecast
+  scripts/cost_report.py           spend per AWS service (Cost Explorer), for slides
+  scripts/teardown.sh              deletes every project resource; docs/teardown.md
 ```
 
-Who reads labels: the training job (TrainBQ1) and the Q2 compare job (BQ2Compare), and the dashboard for
-evaluation (its Account investigation and Sharing pages show ground truth). The scoring jobs (ScoreBQ1, GIN
-Score, BQ2Score) never do; their roles cannot read `labels/` or `transfer_labels/`.
+Who reads labels: Prepare writes them (`labels/`, `transfer_labels/`, `rings/`),
+and its role can read them back. TrainBQ1 reads `labels/` and BQ2Compare reads
+`transfer_labels/`. The dashboard reads them for evaluation: its Account
+investigation and Sharing pages show ground truth, and its Review queue shows rings.
+The scoring jobs (ScoreBQ1, Score, BQ2Score) never do; their roles cannot read any
+of the three.
 
 The Athena layer (workgroup, Glue database, tables, views) is created by Terraform
 (`infra/athena.tf`); see `dashboard/athena/README.md`.
@@ -69,11 +79,12 @@ task fails partway, a re-run skips files already in S3 and carries on.
 
 Prepare runs on a shared EMR Serverless Spark application (`is459-team6-spark`,
 EMR 7, at most 32 vCPU and 128 GB, auto-stopping after 15 minutes idle), which
-BQ1 training and daily scoring also run on; the GIN and Q2 jobs run on AWS Batch. Terraform uploads `prepare/prepare.py` to
-`s3://<curated>/code/prepare.py`, and the state machine starts it synchronously with
-a 1-hour timeout, retrying only service-level transients: a job that failed on its
-own data would spend another hour reaching the same verdict. Spark driver and
-executor logs land under `s3://<curated>/logs/`.
+BQ1 training and daily scoring also run on; the GIN and BQ2 jobs run on AWS Batch.
+Terraform uploads `prepare/prepare.py` to `s3://<curated>/code/prepare.py`, and the
+state machine starts it synchronously with a 1-hour timeout, retrying only
+service-level transients: a job that failed on its own data would spend another hour
+reaching the same verdict. Spark driver and executor logs land under
+`s3://<curated>/logs/`.
 
 The job runs as `is459-team6-emr-job`, which can read the raw prefix and the job
 code and read and write the curated prefix. It has no write access to the raw
