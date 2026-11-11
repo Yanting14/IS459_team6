@@ -40,6 +40,7 @@ variables {
   curated_prefix      = "ibm-aml/test"
   athena_queue_run    = "run-1"
   athena_create_views = false # the views run a local script against real Athena
+  enable_dashboard    = false # team.auto.tfvars.json turns it on for the demo weeks
 }
 
 run "tables_follow_the_pipeline_prefixes" {

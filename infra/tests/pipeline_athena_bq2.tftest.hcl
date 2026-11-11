@@ -42,6 +42,7 @@ mock_provider "archive" {}
 variables {
   curated_prefix       = "ibm-aml/test"
   athena_create_views  = false # the views run a local script against real Athena
+  enable_dashboard     = false # team.auto.tfvars.json turns it on for the demo weeks
   enable_scoring       = true
   scoring_image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   bq1_model_version    = "m1"

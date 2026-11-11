@@ -33,6 +33,7 @@ mock_provider "archive" {}
 variables {
   curated_prefix      = "ibm-aml/test"
   athena_create_views = false # the views run a local script against real Athena
+  enable_dashboard    = false # team.auto.tfvars.json turns it on for the demo weeks
 }
 
 run "prepare_leads_to_bq1_then_the_gin" {
