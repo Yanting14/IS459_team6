@@ -31,6 +31,8 @@ Environment variables
   DASH_METRICS_DIR   override the metrics folder
   DASH_CURATED_DIR   override the curated folder
   DASH_SHARING_DIR   override the sharing folder
+  DASH_PASSWORD      optional: when set, app.py asks for this shared password before showing any page
+                     (the hosted dashboard sets it); unset or empty, there is no gate
 """
 from __future__ import annotations
 
