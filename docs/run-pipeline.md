@@ -122,13 +122,14 @@ from `terraform output athena_query_policy_arn`.
 
 The same app can run on one EC2 instance behind a shared password. It is plain HTTP, so pick a password
 used nowhere else. Set the password once (Terraform creates the secret but never its value), then turn
-the host on:
+the host on with `"enable_dashboard": true` in `infra/team.auto.tfvars.json`, committed, so that a
+teammate's plain `terraform apply` keeps it rather than destroying it:
 
 ```bash
 cd infra
 aws secretsmanager put-secret-value --secret-id "$(terraform output -raw dashboard_password_secret_name)" \
   --secret-string 'a-password-used-nowhere-else'
-terraform apply -var enable_dashboard=true   # or set "enable_dashboard": true in team.auto.tfvars.json
+terraform apply                              # after setting "enable_dashboard": true
 terraform output -raw dashboard_url          # http://<public DNS>:8501, after a few minutes of boot
 ```
 
@@ -136,7 +137,8 @@ The service refuses to start while the secret is empty and retries every 30 seco
 password later also works. A change under `dashboard/` replaces the instance on the next apply, and the
 URL changes with it: re-read `dashboard_url`. Shell access is through SSM Session Manager only
 (`aws ssm start-session --target <instance id>`); the boot log is `/var/log/cloud-init-output.log` and the
-service log is `journalctl -u dashboard`. Turn it off again with `enable_dashboard=false`.
+service log is `journalctl -u dashboard`. After the demo weeks, set `"enable_dashboard": false` again
+and apply.
 
 ## 5. When something fails
 
@@ -159,5 +161,6 @@ Fix the cause and run again: completed work is reused, so a re-run continues rat
 | `enable_scoring`, `scoring_image_digest`, `scoring_start` | the GIN scoring step |
 | `enable_bq2`, `bq2_dates`, `bq2_banks`, `bq2_ratio`, `bq2_floor` | the Q2 experiment |
 | `enable_daily_schedule` | daily 02:00 SGT start; off, since the dataset is static |
+| `enable_dashboard`, `dashboard_instance_type` | the hosted dashboard (section 4); on only for the demo weeks |
 
-The dashboard stays local (`streamlit run`). It is not hosted, so no public endpoint holds the data.
+With `enable_dashboard` off, the dashboard runs only locally (`streamlit run`) and no public endpoint serves the data.

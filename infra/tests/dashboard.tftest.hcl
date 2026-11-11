@@ -6,6 +6,9 @@ mock_provider "aws" {
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
   }
+  mock_data "aws_ec2_instance_type_offerings" {
+    defaults = { locations = ["us-east-1a"] }
+  }
   mock_data "aws_subnets" {
     defaults = { ids = ["subnet-mock"] }
   }
@@ -45,6 +48,7 @@ variables {
   enable_bq2           = false
   scoring_image_digest = ""
   athena_create_views  = false # the views run a local script against real Athena
+  enable_dashboard     = false # team.auto.tfvars.json turns it on for the demo weeks
 }
 
 run "disabled_creates_only_the_password_secret" {
@@ -52,6 +56,10 @@ run "disabled_creates_only_the_password_secret" {
   assert {
     condition     = length(aws_instance.dashboard) == 0 && length(aws_security_group.dashboard) == 0 && length(aws_iam_role.dashboard) == 0 && length(aws_s3_object.dashboard_code) == 0
     error_message = "with enable_dashboard false there must be no instance, security group, role or code object"
+  }
+  assert {
+    condition     = length(aws_iam_instance_profile.dashboard) == 0 && length(aws_iam_role_policy.dashboard) == 0 && length(aws_iam_role_policy_attachment.dashboard) == 0
+    error_message = "with enable_dashboard false there must be no instance profile, inline policy or policy attachment"
   }
   assert {
     condition     = aws_secretsmanager_secret.dashboard_password.name == "is459-team6/dashboard-password" && aws_secretsmanager_secret.dashboard_password.recovery_window_in_days == 0
@@ -67,6 +75,19 @@ run "enabled_instance_is_locked_down" {
   command = apply
   variables {
     enable_dashboard = true
+  }
+  # Two default subnets in AZs that offer the instance type: the choice must not depend on API order.
+  override_data {
+    target = data.aws_subnets.dashboard
+    values = { ids = ["subnet-b", "subnet-a"] }
+  }
+  assert {
+    condition     = aws_instance.dashboard[0].subnet_id == "subnet-a"
+    error_message = "the instance must go in the first (sorted) default subnet of an AZ offering its type"
+  }
+  assert {
+    condition     = strcontains(aws_instance.dashboard[0].user_data, "User=dashboard")
+    error_message = "the dashboard service must run as the unprivileged dashboard user, not root"
   }
   assert {
     condition     = aws_instance.dashboard[0].metadata_options[0].http_tokens == "required" && aws_instance.dashboard[0].metadata_options[0].http_put_response_hop_limit == 1
