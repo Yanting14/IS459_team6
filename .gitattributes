@@ -4,6 +4,8 @@
 # The same for the dashboard zip; and dashboard.tf holds a bash user_data heredoc that keeps CRs.
 dashboard/** text=auto eol=lf
 infra/dashboard.tf text eol=lf
+# Bash reads a CR as part of the command, in Git Bash and on Linux alike.
+scripts/*.sh text eol=lf
 
 # Frozen source hashes include line endings and upstream whitespace.
 # Preserve the supplied bytes and exclude these copies from whitespace linting.
