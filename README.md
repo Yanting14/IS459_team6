@@ -267,10 +267,16 @@ group `/ecs/is459-team6-ingest`.
 | `enable_daily_schedule` | `false` | Turn on once the full pipeline exists |
 | `enable_scoring` | `false` | Enable after publishing the model bundle and scoring image |
 | `scoring_image_digest` | empty | Required immutable ECR digest when scoring is enabled |
-| `force_destroy_buckets` | `false` | Set `true` before `terraform destroy` at project end |
+| `force_destroy_buckets` | `false` | Set by `scripts/teardown.sh` at project end; see [teardown](docs/teardown.md) |
 | `bq1_model_version` | empty | Pinned BQ1 model under `s3://<models>/bq1/`; empty skips BQ1 scoring unless the run retrains |
 | `bq1_dates` | `["2022-09-15", "2022-09-16"]` | Days ScoreBQ1 scores, one queue each (a historical replay) |
 | `bq1_k` | `1000` | BQ1 daily review budget |
+
+## Tear down
+
+After the Week 13 presentation, `scripts/teardown.sh` deletes every project resource, the state bucket
+last, and checks that nothing tagged `Project=is459-team6` is left. Follow [the teardown runbook](docs/teardown.md),
+which also lists the steps the script cannot do.
 
 ## BQ1: account prioritisation
 
