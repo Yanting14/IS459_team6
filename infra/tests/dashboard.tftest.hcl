@@ -114,6 +114,10 @@ run "enabled_instance_is_locked_down" {
     error_message = "the instance's inline policy must not write or delete S3 objects"
   }
   assert {
+    condition     = strcontains(aws_iam_role_policy.dashboard[0].policy, "/bq1/*/metrics.json")
+    error_message = "the instance must read the BQ1 models' metrics.json (Review queue page)"
+  }
+  assert {
     condition     = startswith(output.dashboard_url, "http://") && endswith(output.dashboard_url, ":8501")
     error_message = "dashboard_url must be http://<public DNS>:8501"
   }

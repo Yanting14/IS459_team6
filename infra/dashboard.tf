@@ -100,6 +100,12 @@ resource "aws_iam_role_policy" "dashboard" {
         Resource = "${aws_s3_bucket.scoring["gold"].arn}/${aws_s3_object.dashboard_code[0].key}"
       },
       {
+        # The Review queue page reads the BQ1 model's metrics.json straight from S3; athena_query covers only curated and gold.
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "${local.models_bq1}/*/metrics.json"
+      },
+      {
         Effect   = "Allow"
         Action   = "secretsmanager:GetSecretValue"
         Resource = aws_secretsmanager_secret.dashboard_password.arn

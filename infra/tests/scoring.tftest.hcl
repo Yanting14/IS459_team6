@@ -36,6 +36,7 @@ variables {
   enable_bq2           = false
   scoring_image_digest = ""
   athena_create_views  = false # the views run a local script against real Athena
+  enable_dashboard     = false # team.auto.tfvars.json turns it on for the demo weeks
 }
 
 run "scoring_disabled_by_default" {
