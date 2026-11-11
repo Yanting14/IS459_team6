@@ -6,18 +6,26 @@ AML detection pipeline on AWS (us-east-1), built with Terraform.
 
 ```
 infra/                 Terraform (S3 raw + curated zones, ingest task, EMR Serverless,
-                       Step Functions, schedule; state in S3)
+                       Step Functions, schedule, Athena, the US$250 budget alerts,
+                       the hosted dashboard on EC2; state in S3)
 ingest/                Fargate container: Kaggle -> S3 raw zone
 prepare/               Spark job (EMR Serverless): raw zone -> curated zone
 train/                 BQ1: Spark ML on EMR Serverless (train, rules baselines, daily scoring)
 lambdas/check_raw/     Lambda: has the raw zone already been ingested?
 scoring/               Frozen GIN, used for BQ2: graph preparation, inference, ranking and evaluation
 bq2/                   BQ2: bank view vs shared view comparison and its results (see bq2/runs/README.md)
-dashboard/             Streamlit review dashboard, one page per business question
-scripts/               Helper scripts
+dashboard/             Streamlit review dashboard, one page per business question; hosted on
+                       EC2 behind a shared password when enable_dashboard is on
+scripts/               Helper scripts: run_pipeline.sh, cost_report.py (spend per AWS service
+                       from Cost Explorer), teardown.sh (deletes everything at project end)
+docs/                  Runbooks, ADRs, teardown.md, architecture/ (the diagram)
 ```
 
 ## Pipeline flow
+
+![IS459 pipeline architecture on AWS](docs/architecture/is459-pipeline.png)
+
+Source: [docs/architecture/is459-pipeline.drawio](docs/architecture/is459-pipeline.drawio) (open in draw.io; the PNG is page 1).
 
 ```
 EventBridge (daily, off by default) / manual start
@@ -37,7 +45,17 @@ EventBridge (daily, off by default) / manual start
                                    bq2-bank-<bank>-<day>); a completed identical run is reused
      -> BQ2Compare (Batch)         bank view vs shared view -> gold sharing/comparison.csv,
                                    under its own role (the only Batch role that reads labels)
+
+Alongside the pipeline, not part of an execution:
+  Dashboard (EC2, off by default)  Streamlit behind a shared password, reads Athena
+  AWS Budgets                      US$250 for 2026; emails at 50, 80, 100% actual, 100% forecast
+  scripts/cost_report.py           spend per AWS service from Cost Explorer, for the slides
+  scripts/teardown.sh              deletes every project resource; see docs/teardown.md
 ```
+
+Who reads labels: the training job (TrainBQ1) and the Q2 compare job (BQ2Compare), and the dashboard for
+evaluation (its Account investigation and Sharing pages show ground truth). The scoring jobs (ScoreBQ1, GIN
+Score, BQ2Score) never do; their roles cannot read `labels/` or `transfer_labels/`.
 
 The Athena layer (workgroup, Glue database, tables, views) is created by Terraform
 (`infra/athena.tf`); see `dashboard/athena/README.md`.
@@ -50,8 +68,8 @@ The dataset is static, so ingestion really runs once. Daily runs skip it. If the
 task fails partway, a re-run skips files already in S3 and carries on.
 
 Prepare runs on a shared EMR Serverless Spark application (`is459-team6-spark`,
-EMR 7, at most 32 vCPU and 128 GB, auto-stopping after 15 minutes idle) that
-Training and Analyse will reuse. Terraform uploads `prepare/prepare.py` to
+EMR 7, at most 32 vCPU and 128 GB, auto-stopping after 15 minutes idle), which
+BQ1 training and daily scoring also run on; the GIN and Q2 jobs run on AWS Batch. Terraform uploads `prepare/prepare.py` to
 `s3://<curated>/code/prepare.py`, and the state machine starts it synchronously with
 a 1-hour timeout, retrying only service-level transients: a job that failed on its
 own data would spend another hour reaching the same verdict. Spark driver and

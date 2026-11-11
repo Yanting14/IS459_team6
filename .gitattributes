@@ -11,3 +11,6 @@ scripts/*.sh text eol=lf
 # Preserve the supplied bytes and exclude these copies from whitespace linting.
 # Last, so it overrides the rule above.
 scoring/vendor/* -text -whitespace
+
+# Images are binary: no line-ending conversion or text diffs.
+*.png binary
