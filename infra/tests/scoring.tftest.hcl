@@ -33,6 +33,7 @@ mock_provider "archive" {}
 # The repository defaults, not team.auto.tfvars.json, which terraform test also loads.
 variables {
   enable_scoring       = false
+  enable_bq2           = false
   scoring_image_digest = ""
   athena_create_views  = false # the views run a local script against real Athena
 }
