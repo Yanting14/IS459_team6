@@ -116,6 +116,32 @@ resource "aws_iam_instance_profile" "dashboard" {
 
 # --- Instance -------------------------------------------------------------------
 
+# Not every AZ offers every instance type (us-east-1e has no t3), so use a default subnet in one that does.
+data "aws_ec2_instance_type_offerings" "dashboard" {
+  count         = local.dashboard_count
+  location_type = "availability-zone"
+  filter {
+    name   = "instance-type"
+    values = [var.dashboard_instance_type]
+  }
+}
+
+data "aws_subnets" "dashboard" {
+  count = local.dashboard_count
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+  filter {
+    name   = "default-for-az"
+    values = ["true"]
+  }
+  filter {
+    name   = "availability-zone"
+    values = data.aws_ec2_instance_type_offerings.dashboard[0].locations
+  }
+}
+
 data "aws_ssm_parameter" "al2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
@@ -124,7 +150,7 @@ resource "aws_instance" "dashboard" {
   count                       = local.dashboard_count
   ami                         = data.aws_ssm_parameter.al2023.value
   instance_type               = var.dashboard_instance_type
-  subnet_id                   = data.aws_subnets.default_public.ids[0]
+  subnet_id                   = sort(data.aws_subnets.dashboard[0].ids)[0]
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.dashboard[0].id]
   iam_instance_profile        = aws_iam_instance_profile.dashboard[0].name
@@ -143,6 +169,11 @@ resource "aws_instance" "dashboard" {
     encrypted   = true
   }
 
+  # A new AL2023 release must not replace a running demo host; code changes still do (user_data below).
+  lifecycle {
+    ignore_changes = [ami]
+  }
+
   # The zip's hash is in the script, so a code change replaces the instance on apply.
   user_data_replace_on_change = true
   user_data                   = <<-EOT
@@ -150,6 +181,8 @@ resource "aws_instance" "dashboard" {
     # code ${data.archive_file.dashboard[0].output_base64sha256}
     set -euo pipefail
     dnf install -y python3.11 unzip
+    # Unprivileged service user; Streamlit writes ~/.streamlit, so it needs a home.
+    useradd --system --create-home --shell /sbin/nologin dashboard
     mkdir -p /opt/dashboard
     aws s3 cp --region ${var.region} s3://${aws_s3_object.dashboard_code[0].bucket}/${aws_s3_object.dashboard_code[0].key} /tmp/dashboard.zip
     unzip -o /tmp/dashboard.zip -d /opt/dashboard
@@ -160,6 +193,8 @@ resource "aws_instance" "dashboard" {
     #!/bin/bash
     set -euo pipefail
     DASH_PASSWORD=$(aws secretsmanager get-secret-value --region ${var.region} --secret-id ${aws_secretsmanager_secret.dashboard_password.arn} --query SecretString --output text || true)
+    # Strip exactly as app.py does, so a whitespace-only secret fails closed instead of disabling the gate.
+    DASH_PASSWORD=$(printf '%s' "$DASH_PASSWORD" | /opt/dashboard/venv/bin/python -c 'import sys; print(sys.stdin.read().strip(), end="")')
     # Fail closed: never serve the dashboard without its password.
     if [ -z "$DASH_PASSWORD" ] || [ "$DASH_PASSWORD" = "None" ]; then echo "dashboard password secret is empty" >&2; exit 1; fi
     export DASH_PASSWORD DASH_SOURCE=athena DASH_ATHENA_REGION=${var.region} DASH_ATHENA_WORKGROUP=${local.athena_workgroup} DASH_ATHENA_DATABASE=${local.athena_database}
@@ -175,6 +210,7 @@ resource "aws_instance" "dashboard" {
     Wants=network-online.target
 
     [Service]
+    User=dashboard
     ExecStart=/opt/dashboard/run.sh
     Restart=on-failure
     RestartSec=30
