@@ -50,6 +50,14 @@ def test_the_right_password_shows_the_default_page(monkeypatch):
     assert QUEUE_TITLE in titles(at)
 
 
+def test_a_trailing_newline_in_the_secret_is_ignored(monkeypatch):
+    monkeypatch.setenv("DASH_PASSWORD", "s3cret\n")
+    at = run_app()
+    at.text_input[0].input("s3cret").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert QUEUE_TITLE in titles(at)
+
+
 def test_no_gate_when_unset(monkeypatch):
     monkeypatch.delenv("DASH_PASSWORD", raising=False)
     at = run_app()

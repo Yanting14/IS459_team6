@@ -9,8 +9,12 @@ mock_provider "aws" {
 }
 mock_provider "archive" {}
 
+# The repository defaults, not team.auto.tfvars.json, which terraform test also loads.
 variables {
-  athena_create_views = false # the views run a local script against real Athena
+  enable_scoring       = false
+  enable_bq2           = false
+  scoring_image_digest = ""
+  athena_create_views  = false # the views run a local script against real Athena
 }
 
 run "budget_covers_the_project_total" {
@@ -41,10 +45,10 @@ run "budget_covers_the_project_total" {
   }
 }
 
-run "budget_plans_without_recipients" {
+run "budget_without_recipients_has_no_notifications" {
   command = plan
   assert {
-    condition     = length(aws_budgets_budget.project.notification) == 4
-    error_message = "the budget must still plan with no alert_emails"
+    condition     = length(aws_budgets_budget.project.notification) == 0
+    error_message = "with no alert_emails the budget must exist with no notifications (AWS rejects one without subscribers)"
   }
 }

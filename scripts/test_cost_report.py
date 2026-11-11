@@ -61,6 +61,18 @@ def test_services_under_one_cent_are_folded_into_other_then_the_total_and_budget
     ]
 
 
+def test_a_large_credit_is_shown_not_folded_into_other():
+    pages = [{"ResultsByTime": [month("2026-10-01", "2026-11-01",
+                                      group("Amazon Elastic MapReduce", "10.00"),
+                                      group("Credits", "-5.00"))]}]
+
+    assert cost_report.format_report(pages).splitlines()[2:5] == [
+        "| Amazon Elastic MapReduce | 10.00 |",
+        "| Credits | -5.00 |",
+        "| **Total** | **5.00** |",
+    ]
+
+
 class FakeCostExplorer:
     def __init__(self, pages):
         self.pages = pages
