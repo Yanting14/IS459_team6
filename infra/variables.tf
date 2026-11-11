@@ -220,3 +220,15 @@ variable "budget_usd" {
   type        = number
   default     = 250
 }
+
+variable "enable_dashboard" {
+  description = "Host the dashboard on one EC2 instance at dashboard_url. Fill the dashboard-password secret first, or the service refuses to start."
+  type        = bool
+  default     = false
+}
+
+variable "dashboard_instance_type" {
+  description = "EC2 instance type of the hosted dashboard."
+  type        = string
+  default     = "t3.small"
+}

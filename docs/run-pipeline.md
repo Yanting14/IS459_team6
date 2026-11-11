@@ -118,6 +118,26 @@ The dashboard reads every table through Athena. It shows the queue the last run 
 run re-pointed `queue_files`. Restart Streamlit after a new run to clear its cache. Users need the IAM policy
 from `terraform output athena_query_policy_arn`.
 
+### Hosted
+
+The same app can run on one EC2 instance behind a shared password. It is plain HTTP, so pick a password
+used nowhere else. Set the password once (Terraform creates the secret but never its value), then turn
+the host on:
+
+```bash
+cd infra
+aws secretsmanager put-secret-value --secret-id "$(terraform output -raw dashboard_password_secret_name)" \
+  --secret-string 'a-password-used-nowhere-else'
+terraform apply -var enable_dashboard=true   # or set "enable_dashboard": true in team.auto.tfvars.json
+terraform output -raw dashboard_url          # http://<public DNS>:8501, after a few minutes of boot
+```
+
+The service refuses to start while the secret is empty and retries every 30 seconds, so setting the
+password later also works. A change under `dashboard/` replaces the instance on the next apply, and the
+URL changes with it: re-read `dashboard_url`. Shell access is through SSM Session Manager only
+(`aws ssm start-session --target <instance id>`); the boot log is `/var/log/cloud-init-output.log` and the
+service log is `journalctl -u dashboard`. Turn it off again with `enable_dashboard=false`.
+
 ## 5. When something fails
 
 | Failed state | Look at | Usual cause |

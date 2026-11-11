@@ -57,3 +57,12 @@ output "athena_query_policy_arn" {
 output "bq2_compare_job_definition" {
   value = aws_batch_job_definition.bq2_compare.arn
 }
+
+output "dashboard_password_secret_name" {
+  value = aws_secretsmanager_secret.dashboard_password.name
+}
+
+# No Elastic IP: the URL changes when the instance is replaced, so re-read it after apply.
+output "dashboard_url" {
+  value = var.enable_dashboard ? "http://${aws_instance.dashboard[0].public_dns}:8501" : null
+}
