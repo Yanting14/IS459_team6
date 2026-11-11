@@ -45,11 +45,12 @@ def format_report(pages):
                 costs[group["Keys"][0]] += Decimal(group["Metrics"]["UnblendedCost"]["Amount"])
 
     total = sum(costs.values(), Decimal(0))
-    shown = sorted(((s, c) for s, c in costs.items() if c >= FOLD_BELOW), key=lambda sc: -sc[1])
+    # abs: a large credit or refund is negative but must still be shown.
+    shown = sorted(((s, c) for s, c in costs.items() if abs(c) >= FOLD_BELOW), key=lambda sc: -sc[1])
     lines = ["| Service | US$ |", "|---|---:|"]
     lines += [f"| {service} | {cost:.2f} |" for service, cost in shown]
     if len(shown) < len(costs):
-        other = sum((c for c in costs.values() if c < FOLD_BELOW), Decimal(0))
+        other = sum((c for c in costs.values() if abs(c) < FOLD_BELOW), Decimal(0))
         lines.append(f"| other | {other:.2f} |")
     lines += [
         f"| **Total** | **{total:.2f}** |",

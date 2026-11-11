@@ -8,14 +8,15 @@ import streamlit as st
 st.set_page_config(page_title="AML review dashboard", page_icon=":material/policy:", layout="wide")
 
 # Shared-password gate, on only when DASH_PASSWORD is set (the hosted dashboard); no page runs before it.
-password = os.getenv("DASH_PASSWORD", "")
+# Read here, not in dashlib/config.py: config is read once at import, and the tests set it per test.
+password = os.getenv("DASH_PASSWORD", "").strip()
 if password and not st.session_state.get("authenticated"):
     entered = st.text_input("Password", type="password")
     if entered:
         if hmac.compare_digest(entered.encode(), password.encode()):
             st.session_state["authenticated"] = True
             st.rerun()
-        time.sleep(1)  # slows down guessing
+        time.sleep(1)  # slows one session's retries; does not stop guessing from parallel sessions
         st.error("Wrong password.")
     st.stop()
 
