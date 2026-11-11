@@ -208,3 +208,15 @@ variable "bq2_floor" {
   type        = number
   default     = 10
 }
+
+variable "alert_emails" {
+  description = "Who the budget alerts email. The repo is public: set this in an uncommitted infra/*.tfvars or TF_VAR_alert_emails, never in team.auto.tfvars.json. Empty means nobody is notified."
+  type        = list(string)
+  default     = []
+}
+
+variable "budget_usd" {
+  description = "The project's total AWS budget for 2026, in USD."
+  type        = number
+  default     = 250
+}
