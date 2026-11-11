@@ -238,3 +238,6 @@ tfplan
 artifacts/
 *.pt
 *.npy
+
+# drawio
+*.drawio
